@@ -848,13 +848,13 @@ function updateConfig() {
   $('#configClaudeCode').textContent = claudeCode
 
   // OpenAI Codex: ~/.codex/config.toml
-  let toml = '[mcp_servers.tusk]\n'
-  toml += 'command = "npx"\n'
-  toml += 'args = ' + JSON.stringify(['-y', 'tusk-mcp', ...args]) + '\n'
+  let toml = '[mcp_servers.tusk]\\n'
+  toml += 'command = "npx"\\n'
+  toml += 'args = ' + JSON.stringify(['-y', 'tusk-mcp', ...args]) + '\\n'
   if (hasEnv) {
-    toml += '\n[mcp_servers.tusk.env]\n'
+    toml += '\\n[mcp_servers.tusk.env]\\n'
     for (const [k, v] of Object.entries(env)) {
-      toml += k + ' = "' + v.replace(/"/g, '\\"') + '"\n'
+      toml += k + ' = "' + v.replace(/"/g, '\\\\"') + '"\\n'
     }
   }
   $('#configCodex').textContent = toml.trimEnd()

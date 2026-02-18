@@ -42,11 +42,58 @@ async function buildSslConfig(flags: ConnectionFlags) {
   return config
 }
 
+function printUsage(): void {
+  const lines = [
+    'tusk-mcp — Read-only PostgreSQL MCP server for AI agents',
+    '',
+    'Usage:',
+    '  tusk-mcp --host <host> --database <db>    Start MCP server (stdio)',
+    '  tusk-mcp setup                             Interactive browser-based setup',
+    '',
+    'Connection:',
+    '  --host <host>              PostgreSQL host (default: localhost)',
+    '  --port <port>              PostgreSQL port (default: 5432)',
+    '  --user <user>              Database user',
+    '  --password <pass>          Database password',
+    '  --password-file <path>     Read password from file',
+    '  --password-cmd <cmd>       Run command for password',
+    '  --database <name>          Database name',
+    '  --connection-string <url>  Full connection URL',
+    '',
+    'SSL:',
+    '  --ssl-ca <path>            CA certificate (enables SSL)',
+    '  --ssl-cert <path>          Client certificate (enables SSL)',
+    '  --ssl-key <path>           Client key (enables SSL)',
+    '',
+    'SSH tunnel:',
+    '  --ssh-host <host>          SSH tunnel host',
+    '  --ssh-port <port>          SSH tunnel port (default: 22)',
+    '  --ssh-user <user>          SSH username',
+    '  --ssh-key <path>           SSH private key path',
+    '  --ssh-password <pass>      SSH password',
+    '',
+    'Options:',
+    '  --structure-only           Disable execute-query tool',
+    '',
+    'This is an MCP server that communicates over stdio.',
+    'It should be launched by an MCP client (Claude Desktop, Cursor, etc.),',
+    'not run directly in a terminal.',
+    '',
+    'Run "tusk-mcp setup" to configure your MCP client interactively.',
+  ]
+  console.log(lines.join('\n'))
+}
+
 async function main() {
   if (process.argv.includes('setup')) {
     const { startSetup } = await import('./setup.js')
     await startSetup()
     return
+  }
+
+  if (process.stdin.isTTY) {
+    printUsage()
+    process.exit(0)
   }
 
   const { values: flags } = parseArgs({
