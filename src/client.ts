@@ -150,7 +150,7 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
           const enumValues = enumMap.get(c.udtName as string)
           if (enumValues) col.enumValues = enumValues
           return col
-        }) as TableDescription['columns'],
+        }) as unknown as TableDescription['columns'],
         foreignKeys: foreignKeys.map(fk => ({
           columnName: fk.columnName as string,
           referencedTable: fk.referencedTable as string,

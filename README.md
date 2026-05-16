@@ -95,6 +95,14 @@ tusk-mcp --host db --database mydb --structure-only
 | `describe-table` | Columns, types, PKs, FKs, and enum values inline |
 | `execute-query` | Read-only SQL with limit (disabled in structure-only mode) |
 
+## Output format
+
+Tool results use compact text in `content` for the AI model and JSON-safe
+preview data in `structuredContent` for clients that support structured MCP
+output. Query text uses a tab-delimited preview with `null=\N`; strings are
+JSON-quoted, so empty strings render as `""` and the literal string `"\\N"` is
+distinct from SQL null.
+
 ## MCP config
 
 ```json

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { PostgresClient } from '../types.js'
-import { isReadOnlyQuery, formatToolResult, formatToolError } from '../utils.js'
+import { isReadOnlyQuery, formatQueryResult, formatToolError } from '../utils.js'
 
 export function registerQueryTools(server: McpServer, client: PostgresClient): void {
   server.registerTool(
@@ -12,6 +12,17 @@ export function registerQueryTools(server: McpServer, client: PostgresClient): v
       inputSchema: z.object({
         query: z.string().describe('SQL query to execute (read-only)'),
         limit: z.number().min(1).max(5000).default(500).describe('Max rows to return (default: 500, max: 5000)'),
+      }),
+      outputSchema: z.object({
+        result: z.object({
+          columns: z.array(z.string()),
+          rows: z.array(z.record(z.unknown())),
+          rowCount: z.number(),
+          returnedRowCount: z.number(),
+          previewRowCount: z.number(),
+          truncated: z.boolean(),
+          previewTruncated: z.boolean(),
+        }),
       }),
       annotations: {
         readOnlyHint: true,
@@ -24,7 +35,7 @@ export function registerQueryTools(server: McpServer, client: PostgresClient): v
 
       try {
         const result = await client.executeQuery(query, limit)
-        return formatToolResult(result)
+        return formatQueryResult(result)
       } catch (err) {
         return formatToolError(`Query failed: ${err instanceof Error ? err.message : err}`)
       }
