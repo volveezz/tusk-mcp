@@ -24,6 +24,7 @@ export async function createTunnel(options: TunnelOptions): Promise<Tunnel> {
       username: options.sshUser,
       privateKey,
       password: options.sshPassword,
+      readyTimeout: 10_000,
     })
   })
 

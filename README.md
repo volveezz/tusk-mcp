@@ -50,6 +50,41 @@ PGHOST=db.example.com PGDATABASE=mydb tusk-mcp
 
 **Priority**: flags > `--connection-string` > `DATABASE_URL` > `PG*` env vars
 
+## Multiple environments / databases
+
+A config file defines named targets: environments (local/stage/prod) or entirely different databases within one app. `tusk.config.jsonc` or `tusk.config.json` in the working directory is picked up automatically when no connection flags are given; `--config <path>` (relative or absolute) loads an explicit file. Connection flags cannot be combined with a config file.
+
+```jsonc
+{
+  "defaultTarget": "local",          // used when a tool call omits target
+  "defaults": {                      // merged under every target
+    "user": "app",
+    "database": "myapp"
+  },
+  "targets": {
+    "local": { "host": "localhost", "description": "dev" },
+    "stage": {
+      "host": "stage.db.internal",
+      "password": "${STAGE_DB_PASSWORD}",   // env var interpolation
+      "ssl": true
+    },
+    "prod": {
+      "connectionString": "postgres://ro:${PROD_DB_PASSWORD}@10.0.0.5:5432/myapp",
+      "ssh": { "host": "bastion.example.com", "user": "deploy", "key": "~/.ssh/id_rsa" },
+      "structureOnly": true,                // per-target: schema visible, queries disabled
+      "description": "production"
+    },
+    "analytics": { "host": "warehouse.db", "database": "events" }
+  }
+}
+```
+
+Target fields mirror the CLI flags: `host`, `port`, `user`, `password`, `passwordFile`, `passwordCmd`, `database`, `connectionString`, `ssl` (`true` or `{ca, cert, key}` paths), `ssh` (`{host, port, user, key, password}`), `structureOnly`, `description`.
+
+**Priority**: explicit fields > `connectionString` > `defaults`. `ssh`/`ssl` objects deep-merge, so `defaults.ssh` can hold the shared bastion and a target override just the port. `${VAR}` interpolates from the environment in any string, so the file is safe to commit. Config-file targets ignore `PG*` env vars; use `${PGPASSWORD}` explicitly if wanted.
+
+With multiple targets every tool takes a `target` enum parameter (optional when `defaultTarget` is set, absent entirely with a single target), the target list is announced via MCP `instructions`, and `compare-schemas` becomes available. Connections are lazy per target: an unreachable bastion never blocks startup or the other targets.
+
 ## Password security
 
 ```bash
@@ -80,7 +115,7 @@ tusk-mcp --host db-internal --database mydb \
 
 ## Structure-only mode
 
-Disables `execute-query` tool. Agents can see schema but not run queries.
+Agents see schema but cannot run queries. The `--structure-only` flag applies it to every target; per-target `structureOnly` in the config file keeps `execute-query` registered and rejects calls against that target only. When all targets are structure-only the tool is not registered at all.
 
 ```bash
 tusk-mcp --host db --database mydb --structure-only
@@ -90,10 +125,10 @@ tusk-mcp --host db --database mydb --structure-only
 
 | Tool | Description |
 |---|---|
-| `list-schemas` | List non-system schemas |
-| `list-tables` | Tables and views with estimated row counts (partitions filtered out) |
-| `describe-table` | Columns, types, PKs, FKs, and enum values inline |
-| `execute-query` | Read-only SQL with limit (disabled in structure-only mode) |
+| `overview` | All schemas with tables, views, and estimated row counts in one call (partitions filtered out) |
+| `describe-tables` | Columns, types, PKs, FKs, and enum values for one or more tables per call |
+| `execute-query` | Read-only SQL with limit (rejected on structure-only targets) |
+| `compare-schemas` | Structural diff of a schema between two targets (multi-target only) |
 
 ## Output format
 
@@ -101,7 +136,8 @@ Tool results use compact text in `content` for the AI model and JSON-safe
 preview data in `structuredContent` for clients that support structured MCP
 output. Query text uses a tab-delimited preview with `null=\N`; strings are
 JSON-quoted, so empty strings render as `""` and the literal string `"\\N"` is
-distinct from SQL null.
+distinct from SQL null. With multiple targets, results start with a
+`target=<name>` line.
 
 ## MCP config
 
@@ -134,20 +170,22 @@ args = ["-y", "tusk-mcp", "--host", "localhost", "--database", "mydb"]
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
+| `--config` | string | - | Multi-target config file (see above) |
 | `--host` | string | localhost | PostgreSQL host |
 | `--port` | number | 5432 | PostgreSQL port |
-| `--user` | string | — | Database user |
-| `--password` | string | — | Database password |
-| `--password-file` | string | — | Read password from file |
-| `--password-cmd` | string | — | Run command for password |
-| `--database` | string | — | Database name |
-| `--connection-string` | string | — | Full connection URL |
-| `--ssl-ca` | string | — | CA certificate path (enables SSL) |
-| `--ssl-cert` | string | — | Client certificate path (enables SSL) |
-| `--ssl-key` | string | — | Client key path (enables SSL) |
-| `--ssh-host` | string | — | SSH tunnel host |
+| `--user` | string | - | Database user |
+| `--password` | string | - | Database password |
+| `--password-file` | string | - | Read password from file |
+| `--password-cmd` | string | - | Run command for password |
+| `--database` | string | - | Database name |
+| `--connection-string` | string | - | Full connection URL |
+| `--ssl` | boolean | false | Enable SSL without certificate verification |
+| `--ssl-ca` | string | - | CA certificate path (enables SSL) |
+| `--ssl-cert` | string | - | Client certificate path (enables SSL) |
+| `--ssl-key` | string | - | Client key path (enables SSL) |
+| `--ssh-host` | string | - | SSH tunnel host |
 | `--ssh-port` | number | 22 | SSH tunnel port |
-| `--ssh-user` | string | — | SSH username |
-| `--ssh-key` | string | — | SSH private key path |
-| `--ssh-password` | string | — | SSH password |
+| `--ssh-user` | string | - | SSH username |
+| `--ssh-key` | string | - | SSH private key path |
+| `--ssh-password` | string | - | SSH password |
 | `--structure-only` | boolean | false | Disable execute-query |

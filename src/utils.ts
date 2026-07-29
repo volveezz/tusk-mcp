@@ -1,5 +1,7 @@
 import type {
+  ColumnInfo,
   QueryResult,
+  SchemaDiff,
   SchemaInfo,
   TableDescription,
   TableInfo,
@@ -54,20 +56,20 @@ export function isReadOnlyQuery(query: string): boolean {
  * Parses a PostgreSQL connection string into individual components.
  * Does NOT use new URL() because it silently misparses # as a fragment
  * separator and can't handle unencoded @ in passwords. Instead, manually
- * splits on the LAST @ as the credential/host boundary — this correctly
- * handles any special characters in passwords without requiring URL-encoding.
+ * splits on the LAST @ as the credential/host boundary, which handles any
+ * special characters in passwords without requiring URL-encoding.
+ * Fields absent from the string come back undefined so callers can layer
+ * their own defaults (config merge, env fallback) without being clobbered.
  */
 export function parseConnectionString(cs: string): {
-  host: string; port: number; user?: string; password?: string; database?: string
+  host?: string; port?: number; user?: string; password?: string; database?: string
 } {
   const schemeEnd = cs.indexOf('://')
-  if (schemeEnd === -1) throw new Error('Invalid connection string — expected postgresql:// prefix')
+  if (schemeEnd === -1) throw new Error('Invalid connection string: expected postgresql:// prefix')
 
   const rest = cs.slice(schemeEnd + 3)
   const lastAt = rest.lastIndexOf('@')
-  if (lastAt === -1) throw new Error('Invalid connection string — missing @ between credentials and host')
-
-  const userInfo = rest.slice(0, lastAt)
+  const userInfo = lastAt >= 0 ? rest.slice(0, lastAt) : ''
   const hostPart = rest.slice(lastAt + 1)
 
   const colonIdx = userInfo.indexOf(':')
@@ -81,11 +83,11 @@ export function parseConnectionString(cs: string): {
 
   const portIdx = hostPort.lastIndexOf(':')
   const host = portIdx >= 0 ? hostPort.slice(0, portIdx) : hostPort
-  const port = portIdx >= 0 ? parseInt(hostPort.slice(portIdx + 1)) : 5432
+  const port = portIdx >= 0 ? parseInt(hostPort.slice(portIdx + 1)) : NaN
 
   return {
-    host: host || 'localhost',
-    port: isNaN(port) ? 5432 : port,
+    host: host || undefined,
+    port: isNaN(port) ? undefined : port,
     user: user || undefined,
     password: password || undefined,
     database: database || undefined,
@@ -103,42 +105,61 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string
 const QUERY_TEXT_PREVIEW_ROWS = 25
 const MAX_CELL_CHARS = 240
 
-export function formatSchemasResult(schemas: SchemaInfo[]): ToolResult {
+interface SchemaOverview {
+  name: string
+  owner: string
+  tables: Omit<TableInfo, 'schema'>[]
+}
+
+function prefixTarget(text: string, target: string, multiTarget: boolean): string {
+  return multiTarget ? `target=${target}\n${text}` : text
+}
+
+export function formatOverviewResult(target: string, multiTarget: boolean, schemas: SchemaInfo[], tables: TableInfo[]): ToolResult {
+  const bySchema = new Map<string, Omit<TableInfo, 'schema'>[]>()
+  for (const { schema, ...table } of tables) {
+    const group = bySchema.get(schema) ?? []
+    group.push(table)
+    bySchema.set(schema, group)
+  }
+  const overview: SchemaOverview[] = schemas.map(s => ({ name: s.name, owner: s.owner, tables: bySchema.get(s.name) ?? [] }))
   return {
-    content: [{ type: 'text', text: renderSchemas(schemas) }],
-    structuredContent: { schemas },
+    content: [{ type: 'text', text: prefixTarget(renderOverview(overview), target, multiTarget) }],
+    structuredContent: { target, schemas: overview },
   }
 }
 
-export function formatTablesResult(schema: string, tables: TableInfo[]): ToolResult {
+export function formatTableDescriptionsResult(target: string, multiTarget: boolean, descriptions: TableDescription[]): ToolResult {
+  const blocks = descriptions.map(d => d.columns.length === 0
+    ? `${encodeAtom(d.schema)}.${encodeAtom(d.table)}: not found`
+    : renderTableDescription(d))
   return {
-    content: [{ type: 'text', text: renderTables(schema, tables) }],
-    structuredContent: { schema, tables },
+    content: [{ type: 'text', text: prefixTarget(blocks.join('\n\n'), target, multiTarget) }],
+    structuredContent: { target, tables: descriptions },
   }
 }
 
-export function formatTableDescriptionResult(description: TableDescription): ToolResult {
+export function formatSchemaDiffResult(diff: SchemaDiff): ToolResult {
   return {
-    content: [{ type: 'text', text: renderTableDescription(description) }],
-    structuredContent: { table: description },
+    content: [{ type: 'text', text: renderSchemaDiff(diff) }],
+    structuredContent: { diff },
   }
 }
 
-export function formatQueryResult(result: QueryResult): ToolResult {
+export function formatQueryResult(target: string, multiTarget: boolean, result: QueryResult): ToolResult {
   const previewRows = result.rows.slice(0, QUERY_TEXT_PREVIEW_ROWS)
   const structuredResult = {
     columns: result.columns,
     rows: previewRows.map(row => normalizeRow(row)),
     rowCount: result.rowCount,
-    returnedRowCount: result.rows.length,
     previewRowCount: previewRows.length,
     truncated: result.truncated,
     previewTruncated: previewRows.length < result.rows.length,
   }
 
   return {
-    content: [{ type: 'text', text: renderQueryResult(result) }],
-    structuredContent: { result: structuredResult },
+    content: [{ type: 'text', text: prefixTarget(renderQueryResult(result), target, multiTarget) }],
+    structuredContent: { target, result: structuredResult },
   }
 }
 
@@ -149,15 +170,46 @@ export function formatToolError(message: string): { content: Array<{ type: 'text
   }
 }
 
-function renderSchemas(schemas: SchemaInfo[]): string {
-  if (schemas.length === 0) return 'schemas: none'
-  return `schemas: ${schemas.map(s => `${encodeAtom(s.name)}(owner=${encodeAtom(s.owner)})`).join(', ')}`
+function renderOverview(overview: SchemaOverview[]): string {
+  const lines: string[] = []
+  const empty: string[] = []
+  for (const schema of overview) {
+    if (schema.tables.length === 0) {
+      empty.push(schema.name)
+      continue
+    }
+    lines.push(`${encodeAtom(schema.name)}: ${schema.tables.map(t => `${encodeAtom(t.name)} ${t.type} ~${formatCount(t.estimatedRowCount)}`).join('; ')}`)
+  }
+  if (empty.length > 0) lines.push(`empty: ${empty.map(encodeAtom).join(', ')}`)
+  if (overview.length === 0) lines.push('no schemas')
+  return lines.join('\n')
 }
 
-function renderTables(schema: string, tables: TableInfo[]): string {
-  const schemaName = encodeAtom(schema)
-  if (tables.length === 0) return `${schemaName}: no tables or views`
-  return `${schemaName}: ${tables.map(t => `${encodeAtom(t.name)} ${t.type} ~${formatCount(t.estimatedRowCount)}`).join('; ')}`
+function renderSchemaDiff(diff: SchemaDiff): string {
+  const lines = [`${encodeAtom(diff.schema)}: ${diff.targetA} vs ${diff.targetB}`]
+  if (diff.onlyInA.length > 0) lines.push(`only in ${diff.targetA}: ${diff.onlyInA.map(encodeAtom).join(', ')}`)
+  if (diff.onlyInB.length > 0) lines.push(`only in ${diff.targetB}: ${diff.onlyInB.map(encodeAtom).join(', ')}`)
+  if (diff.missing.length > 0) lines.push(`not found on either side: ${diff.missing.map(encodeAtom).join(', ')}`)
+  for (const table of diff.tableDiffs) {
+    const parts = table.changes.map(change => {
+      if (change.b === null) return `${encodeAtom(change.column)} (${change.a}) only in ${diff.targetA}`
+      if (change.a === null) return `${encodeAtom(change.column)} (${change.b}) only in ${diff.targetB}`
+      return `${encodeAtom(change.column)}: ${change.a} vs ${change.b}`
+    })
+    lines.push(`${encodeAtom(table.table)}: ${parts.join('; ')}`)
+  }
+  lines.push(diff.comparedCount === 0
+    ? 'no common tables'
+    : `identical: ${diff.identicalCount}/${diff.comparedCount} tables`)
+  return lines.join('\n')
+}
+
+/** Compact column signature (type, nullability, pk, enum) shared by describe-tables and compare-schemas so both render columns identically. */
+export function columnSignature(column: ColumnInfo): string {
+  const parts = [encodeAtom(column.type), column.nullable ? '?' : '!']
+  if (column.isPrimaryKey) parts.push('pk')
+  if (column.enumValues?.length) parts.push(`enum(${column.enumValues.map(encodeAtom).join(',')})`)
+  return parts.join(' ')
 }
 
 function renderTableDescription(description: TableDescription): string {
@@ -171,11 +223,8 @@ function renderTableDescription(description: TableDescription): string {
   const lines = [`${encodeAtom(description.schema)}.${encodeAtom(description.table)}`]
 
   for (const column of description.columns) {
-    const parts = [encodeAtom(column.name), encodeAtom(column.type)]
-    if (column.isPrimaryKey) parts.push('pk')
-    parts.push(column.nullable ? '?' : '!')
+    const parts = [encodeAtom(column.name), columnSignature(column)]
     if (column.defaultValue) parts.push(`default ${encodeAtom(compactWhitespace(column.defaultValue))}`)
-    if (column.enumValues?.length) parts.push(`enum(${column.enumValues.map(encodeAtom).join(',')})`)
 
     for (const fk of fksByColumn.get(column.name) ?? []) {
       parts.push(`-> ${encodeDottedName(fk.referencedTable)}.${encodeAtom(fk.referencedColumn)}(${encodeAtom(fk.constraintName)})`)
@@ -203,16 +252,11 @@ function renderQueryResult(result: QueryResult): string {
   return lines.join('\n')
 }
 
-function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return '\\N'
-  if (typeof value === 'string') return JSON.stringify(value)
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value)
-  return JSON.stringify(value) ?? String(value)
-}
-
 function renderCell(value: unknown): string {
-  const rendered = renderValue(value)
-
+  if (value === null || value === undefined) return '\\N'
+  const rendered = typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint'
+    ? String(value)
+    : JSON.stringify(value) ?? String(value)
   return truncate(rendered, MAX_CELL_CHARS)
 }
 

@@ -25,56 +25,57 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
   })
 
   return {
+    // pg_namespace instead of information_schema.schemata: the latter hides
+    // schemas the connected role lacks CREATE/USAGE on, which would silently
+    // drop their tables from the overview join for read-only roles.
     async listSchemas(): Promise<SchemaInfo[]> {
       const rows = await sql`
-        SELECT schema_name AS name, schema_owner AS owner
-        FROM information_schema.schemata
-        WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-          AND schema_name NOT LIKE 'pg_temp_%'
-          AND schema_name NOT LIKE 'pg_toast_temp_%'
-        ORDER BY schema_name
+        SELECT n.nspname AS name, pg_get_userbyid(n.nspowner) AS owner
+        FROM pg_namespace n
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+          AND n.nspname NOT LIKE 'pg_temp_%'
+          AND n.nspname NOT LIKE 'pg_toast_temp_%'
+        ORDER BY n.nspname
       `
       return rows as unknown as SchemaInfo[]
     },
 
-    async listTables(schema: string): Promise<TableInfo[]> {
+    async listTables(schema?: string): Promise<TableInfo[]> {
+      const filter = schema ?? null
       const rows = await sql`
         SELECT
           s.schemaname AS schema,
           s.relname AS name,
-          CASE
-            WHEN s.relname IN (
-              SELECT viewname FROM pg_views WHERE schemaname = ${schema}
-            ) THEN 'view'
-            WHEN c.relkind = 'p' THEN 'partitioned table'
+          CASE c.relkind
+            WHEN 'p' THEN 'partitioned table'
+            WHEN 'm' THEN 'materialized view'
             ELSE 'table'
           END AS type,
           COALESCE(s.n_live_tup, 0) AS "estimatedRowCount"
         FROM pg_stat_user_tables s
-        JOIN pg_class c ON c.relname = s.relname
-        JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = s.schemaname
-        WHERE s.schemaname = ${schema}
+        JOIN pg_class c ON c.oid = s.relid
+        WHERE (${filter}::text IS NULL OR s.schemaname = ${filter})
+          AND s.schemaname NOT LIKE 'pg_temp_%'
           AND c.oid NOT IN (SELECT inhrelid FROM pg_inherits)
 
         UNION ALL
 
         SELECT
-          schemaname AS schema,
-          viewname AS name,
+          v.schemaname AS schema,
+          v.viewname AS name,
           'view' AS type,
           0 AS "estimatedRowCount"
-        FROM pg_views
-        WHERE schemaname = ${schema}
-          AND viewname NOT IN (
-            SELECT relname FROM pg_stat_user_tables WHERE schemaname = ${schema}
-          )
+        FROM pg_views v
+        WHERE v.schemaname NOT IN ('pg_catalog', 'information_schema')
+          AND v.schemaname NOT LIKE 'pg_temp_%'
+          AND (${filter}::text IS NULL OR v.schemaname = ${filter})
 
-        ORDER BY name
+        ORDER BY 1, 2
       `
       return rows.map(r => ({
         schema: r.schema as string,
         name: r.name as string,
-        type: r.type as 'table' | 'view' | 'partitioned table',
+        type: r.type as TableInfo['type'],
         estimatedRowCount: Number(r.estimatedRowCount),
       }))
     },
@@ -94,30 +95,31 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
         `,
         sql`
           SELECT
-            kcu.column_name AS "columnName",
-            ccu.table_schema || '.' || ccu.table_name AS "referencedTable",
-            ccu.column_name AS "referencedColumn",
-            tc.constraint_name AS "constraintName"
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name
-            AND tc.table_schema = kcu.table_schema
-          JOIN information_schema.constraint_column_usage ccu
-            ON ccu.constraint_name = tc.constraint_name
-            AND ccu.table_schema = tc.table_schema
-          WHERE tc.constraint_type = 'FOREIGN KEY'
-            AND tc.table_schema = ${schema}
-            AND tc.table_name = ${table}
+            a.attname AS "columnName",
+            rn.nspname || '.' || rc.relname AS "referencedTable",
+            ra.attname AS "referencedColumn",
+            con.conname AS "constraintName"
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_class rc ON rc.oid = con.confrelid
+          JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+          JOIN LATERAL unnest(con.conkey, con.confkey) AS k(attnum, refattnum) ON true
+          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+          JOIN pg_attribute ra ON ra.attrelid = rc.oid AND ra.attnum = k.refattnum
+          WHERE con.contype = 'f'
+            AND n.nspname = ${schema}
+            AND c.relname = ${table}
         `,
         sql`
-          SELECT kcu.column_name
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name
-            AND tc.table_schema = kcu.table_schema
-          WHERE tc.constraint_type = 'PRIMARY KEY'
-            AND tc.table_schema = ${schema}
-            AND tc.table_name = ${table}
+          SELECT a.attname AS column_name
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY (con.conkey)
+          WHERE con.contype = 'p'
+            AND n.nspname = ${schema}
+            AND c.relname = ${table}
         `,
         sql`
           SELECT t.typname AS name, ARRAY_AGG(e.enumlabel ORDER BY e.enumsortorder) AS values
@@ -164,14 +166,20 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
       const effectiveLimit = Math.min(limit, 5000)
       const cleaned = query.replace(/;\s*$/, '').trim()
       const fetchCount = effectiveLimit + 1
+      const firstWord = cleaned.split(/[\s(]/, 1)[0]?.toUpperCase()
 
       let rows: postgres.RowList<postgres.Row[]>
-      try {
-        rows = await sql.unsafe(
-          `SELECT * FROM (${cleaned}) AS _tusk_result LIMIT ${fetchCount}`
-        )
-      } catch {
-        rows = await sql.unsafe(`${cleaned} LIMIT ${fetchCount}`)
+      // SHOW/EXPLAIN reject LIMIT in any form; run them raw and truncate below
+      if (firstWord === 'SHOW' || firstWord === 'EXPLAIN') {
+        rows = await sql.unsafe(cleaned)
+      } else {
+        try {
+          rows = await sql.unsafe(
+            `SELECT * FROM (${cleaned}) AS _tusk_result LIMIT ${fetchCount}`
+          )
+        } catch {
+          rows = await sql.unsafe(`${cleaned} LIMIT ${fetchCount}`)
+        }
       }
 
       const truncated = rows.length > effectiveLimit

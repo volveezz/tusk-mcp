@@ -33,8 +33,8 @@ async function testConnection(params: Record<string, unknown>) {
 
     if (params.connectionString) {
       const parsed = parseConnectionString(params.connectionString as string)
-      connOptions.host = parsed.host
-      connOptions.port = parsed.port
+      connOptions.host = parsed.host ?? 'localhost'
+      connOptions.port = parsed.port ?? 5432
       connOptions.user = parsed.user
       connOptions.password = parsed.password
       connOptions.database = parsed.database

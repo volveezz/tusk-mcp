@@ -1,4 +1,11 @@
+/**
+ * Shared types: CLI flags, connection options, tunnel, introspection results,
+ * schema-diff shapes, and the PostgresClient interface implemented by
+ * client.ts. Target/config types live in config.ts, inferred from the zod
+ * schemas that validate them.
+ */
 export interface ConnectionFlags {
+  config?: string
   host?: string
   port?: number
   user?: string
@@ -57,7 +64,7 @@ export interface SchemaInfo {
 export interface TableInfo {
   schema: string
   name: string
-  type: 'table' | 'view' | 'partitioned table'
+  type: 'table' | 'view' | 'partitioned table' | 'materialized view'
   estimatedRowCount: number
 }
 
@@ -91,9 +98,32 @@ export interface QueryResult {
   truncated: boolean
 }
 
+export interface ColumnChange {
+  column: string
+  a: string | null
+  b: string | null
+}
+
+export interface TableDiff {
+  table: string
+  changes: ColumnChange[]
+}
+
+export interface SchemaDiff {
+  schema: string
+  targetA: string
+  targetB: string
+  onlyInA: string[]
+  onlyInB: string[]
+  missing: string[]
+  tableDiffs: TableDiff[]
+  comparedCount: number
+  identicalCount: number
+}
+
 export interface PostgresClient {
   listSchemas(): Promise<SchemaInfo[]>
-  listTables(schema: string): Promise<TableInfo[]>
+  listTables(schema?: string): Promise<TableInfo[]>
   describeTable(table: string, schema: string): Promise<TableDescription>
   executeQuery(query: string, limit: number): Promise<QueryResult>
   close(): Promise<void>

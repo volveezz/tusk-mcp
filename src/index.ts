@@ -1,54 +1,24 @@
 #!/usr/bin/env node
 import { parseArgs } from 'util'
-import { readFile } from 'fs/promises'
-import { execSync } from 'child_process'
-import { createPostgresClient } from './client.js'
-import { createTunnel } from './tunnel.js'
+import { configFromFlags, discoverConfig, loadConfigFrom, usedConnectionFlags } from './config.js'
+import type { TuskConfig } from './config.js'
+import { TargetRegistry } from './targets.js'
 import { TuskMcpServer } from './server.js'
-import { parseConnectionString } from './utils.js'
-import type { ConnectionFlags, PostgresConnectionOptions, Tunnel } from './types.js'
-
-async function resolvePassword(flags: ConnectionFlags): Promise<string | undefined> {
-  if (flags.password) return flags.password
-
-  if (flags['password-file']) {
-    return (await readFile(flags['password-file'], 'utf-8')).trim()
-  }
-
-  if (flags['password-cmd']) {
-    try {
-      return execSync(flags['password-cmd'], { encoding: 'utf-8' }).trim()
-    } catch {
-      throw new Error(`password-cmd failed`)
-    }
-  }
-
-  return process.env.PGPASSWORD
-}
-
-async function buildSslConfig(flags: ConnectionFlags) {
-  if (!flags.ssl && !flags['ssl-ca'] && !flags['ssl-cert'] && !flags['ssl-key']) {
-    return false
-  }
-
-  if (!flags['ssl-ca'] && !flags['ssl-cert'] && !flags['ssl-key']) {
-    return { rejectUnauthorized: false }
-  }
-
-  const config: Record<string, unknown> = { rejectUnauthorized: true }
-  if (flags['ssl-ca']) config.ca = await readFile(flags['ssl-ca'], 'utf-8')
-  if (flags['ssl-cert']) config.cert = await readFile(flags['ssl-cert'], 'utf-8')
-  if (flags['ssl-key']) config.key = await readFile(flags['ssl-key'], 'utf-8')
-  return config
-}
+import type { ConnectionFlags } from './types.js'
 
 function printUsage(): void {
   const lines = [
-    'tusk-mcp — Read-only PostgreSQL MCP server for AI agents',
+    'tusk-mcp - Read-only PostgreSQL MCP server for AI agents',
     '',
     'Usage:',
-    '  tusk-mcp --host <host> --database <db>    Start MCP server (stdio)',
+    '  tusk-mcp --host <host> --database <db>     Start MCP server (stdio)',
+    '  tusk-mcp --config <path>                   Start with a multi-target config',
     '  tusk-mcp setup                             Interactive browser-based setup',
+    '',
+    'Config file:',
+    '  Auto-loads tusk.config.jsonc|json from cwd when no connection flags are set.',
+    '  --config <path> loads an explicit file. Named targets (local/stage/prod or',
+    '  separate databases), per-target structureOnly, selected via target param.',
     '',
     'Connection:',
     '  --host <host>              PostgreSQL host (default: localhost)',
@@ -61,6 +31,7 @@ function printUsage(): void {
     '  --connection-string <url>  Full connection URL',
     '',
     'SSL:',
+    '  --ssl                      Enable SSL without certificate verification',
     '  --ssl-ca <path>            CA certificate (enables SSL)',
     '  --ssl-cert <path>          Client certificate (enables SSL)',
     '  --ssl-key <path>           Client key (enables SSL)',
@@ -84,6 +55,40 @@ function printUsage(): void {
   console.log(lines.join('\n'))
 }
 
+async function resolveConfig(flags: ConnectionFlags): Promise<TuskConfig> {
+  const connectionFlags = usedConnectionFlags(flags)
+
+  let config: TuskConfig | undefined
+  if (flags.config) {
+    if (connectionFlags.length > 0) {
+      throw new Error(`--config cannot be combined with connection flags (${connectionFlags.map(f => `--${f}`).join(', ')}); put connection settings in the config file`)
+    }
+    config = await loadConfigFrom(flags.config)
+    console.error(`tusk-mcp: loaded ${flags.config} (targets: ${Object.keys(config.targets).join(', ')})`)
+  } else if (connectionFlags.length === 0) {
+    const discovered = await discoverConfig()
+    if (discovered) {
+      config = discovered.config
+      console.error(`tusk-mcp: loaded ${discovered.path} (targets: ${Object.keys(config.targets).join(', ')})`)
+    }
+  }
+  config ??= configFromFlags(flags)
+
+  if (flags['structure-only']) {
+    for (const target of Object.values(config.targets)) target.structureOnly = true
+  }
+  return config
+}
+
+function parsePort(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined
+  const port = parseInt(value, 10)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`${flag} must be a port number, got "${value}"`)
+  }
+  return port
+}
+
 async function main() {
   if (process.argv.includes('setup')) {
     const { startSetup } = await import('./setup.js')
@@ -98,6 +103,7 @@ async function main() {
 
   const { values: flags } = parseArgs({
     options: {
+      config: { type: 'string' },
       host: { type: 'string' },
       port: { type: 'string' },
       user: { type: 'string' },
@@ -122,70 +128,16 @@ async function main() {
 
   const parsedFlags: ConnectionFlags = {
     ...flags,
-    port: flags.port ? parseInt(flags.port) : undefined,
-    'ssh-port': flags['ssh-port'] ? parseInt(flags['ssh-port']) : undefined,
+    port: parsePort(flags.port, '--port'),
+    'ssh-port': parsePort(flags['ssh-port'], '--ssh-port'),
   }
 
-  let base: PostgresConnectionOptions = {
-    host: process.env.PGHOST ?? 'localhost',
-    port: process.env.PGPORT ? parseInt(process.env.PGPORT) : 5432,
-    user: process.env.PGUSER,
-    password: process.env.PGPASSWORD,
-    database: process.env.PGDATABASE,
-  }
-
-  if (process.env.DATABASE_URL) {
-    base = { ...base, ...parseConnectionString(process.env.DATABASE_URL) }
-  }
-
-  if (parsedFlags['connection-string']) {
-    base = { ...base, ...parseConnectionString(parsedFlags['connection-string']) }
-  }
-
-  const password = await resolvePassword(parsedFlags)
-  const connOptions: PostgresConnectionOptions = {
-    host: parsedFlags.host ?? base.host,
-    port: parsedFlags.port ?? base.port,
-    user: parsedFlags.user ?? base.user,
-    password: password ?? base.password,
-    database: parsedFlags.database ?? base.database,
-  }
-
-  connOptions.ssl = await buildSslConfig(parsedFlags)
-
-  let tunnel: Tunnel | undefined
-
-  if (parsedFlags['ssh-host']) {
-    if (!parsedFlags['ssh-user']) {
-      throw new Error('--ssh-user is required when using --ssh-host')
-    }
-    if (!parsedFlags['ssh-key'] && !parsedFlags['ssh-password']) {
-      throw new Error('--ssh-key or --ssh-password is required when using --ssh-host')
-    }
-
-    tunnel = await createTunnel({
-      sshHost: parsedFlags['ssh-host'],
-      sshPort: parsedFlags['ssh-port'] ?? 22,
-      sshUser: parsedFlags['ssh-user'],
-      sshKey: parsedFlags['ssh-key'],
-      sshPassword: parsedFlags['ssh-password'],
-      targetHost: connOptions.host,
-      targetPort: connOptions.port,
-    })
-
-    connOptions.host = tunnel.localHost
-    connOptions.port = tunnel.localPort
-  }
-
-  const client = createPostgresClient(connOptions)
-
-  const server = new TuskMcpServer(client, {
-    structureOnly: parsedFlags['structure-only'] ?? false,
-  })
+  const config = await resolveConfig(parsedFlags)
+  const registry = new TargetRegistry(config)
+  const server = new TuskMcpServer(registry)
 
   const shutdown = async () => {
-    await client.close()
-    if (tunnel) await tunnel.close()
+    await registry.closeAll()
     process.exit(0)
   }
 

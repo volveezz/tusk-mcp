@@ -1,6 +1,6 @@
 {
   "name": "tusk-mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Read-only PostgreSQL MCP server for AI agents. Schema introspection and SELECT-only query execution.",
   "type": "module",
   "license": "MIT",
@@ -34,6 +34,7 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
+    "check": "tsc --noEmit && bun test",
     "test": "bun test",
     "build:npm": "bun build src/index.ts --outfile dist/cli.mjs --target=node --packages external",
     "prepublishOnly": "bun run build:npm",
