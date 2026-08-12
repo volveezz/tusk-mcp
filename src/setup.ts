@@ -1,6 +1,6 @@
 import http from 'http'
 import { exec, spawn } from 'child_process'
-import { readFile, writeFile, access } from 'fs/promises'
+import { readFile, writeFile, access as pathAccess } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import net from 'net'
@@ -29,6 +29,7 @@ async function testConnection(params: Record<string, unknown>) {
       user: (params.user as string) || undefined,
       password: (params.password as string) || undefined,
       database: (params.database as string) || undefined,
+      readOnly: true,
     }
 
     if (params.connectionString) {
@@ -108,7 +109,7 @@ async function getConfigPaths(): Promise<ConfigTarget[]> {
 
   const results: ConfigTarget[] = []
   for (const t of targets) {
-    const exists = await access(t.path).then(() => true).catch(() => false)
+    const exists = await pathAccess(t.path).then(() => true).catch(() => false)
     results.push({ ...t, exists })
   }
   return results
@@ -129,14 +130,14 @@ async function saveConfig(filePath: string, tuskConfig: Record<string, unknown>)
     if (code === 'ENOENT') {
       existing = {}
     } else if (err instanceof SyntaxError) {
-      throw new Error('Existing config file contains invalid JSON — fix it manually before saving')
+      throw new Error('Existing config file contains invalid JSON: fix it manually before saving')
     } else {
       throw new Error(`Cannot read config: ${err instanceof Error ? err.message : err}`)
     }
   }
 
   if (existing.mcpServers !== undefined && (typeof existing.mcpServers !== 'object' || Array.isArray(existing.mcpServers))) {
-    throw new Error('Existing config has invalid mcpServers field — expected an object')
+    throw new Error('Existing config has invalid mcpServers field: expected an object')
   }
 
   const mcpServers = (existing.mcpServers as Record<string, unknown>) || {}
@@ -413,16 +414,17 @@ const HTML = /*html*/ `<!DOCTYPE html>
     border-radius: 6px; color: var(--text); font-family: var(--font);
     font-size: 14px; outline: none; transition: border-color 0.15s;
   }
+  select {
+    width: 100%; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-family: var(--font);
+    font-size: 14px; outline: none; cursor: pointer;
+  }
+  select:focus { border-color: var(--border-focus); }
+  .field-note { font-size: 12px; color: var(--text-muted); margin: 6px 0 0; }
+  .field-note.warn { color: #f59e0b; }
   input:focus { border-color: var(--border-focus); }
   input::placeholder { color: var(--text-dim); }
-
-  .toggle-row {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
-  }
-  .toggle-row label { margin-bottom: 0; font-size: 14px; color: var(--text); cursor: pointer; }
-  input[type="checkbox"] {
-    width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer;
-  }
 
   .file-row { display: flex; gap: 8px; }
   .file-row input { flex: 1; min-width: 0; }
@@ -546,7 +548,7 @@ const HTML = /*html*/ `<!DOCTYPE html>
 <div class="container">
   <header>
     <h1>tusk-mcp</h1>
-    <p>PostgreSQL MCP Server &mdash; Connection Setup</p>
+    <p>PostgreSQL MCP Server, connection setup</p>
   </header>
 
   <form autocomplete="off" onsubmit="return false">
@@ -660,9 +662,14 @@ const HTML = /*html*/ `<!DOCTYPE html>
       <span class="arrow">&#9654;</span> Options
     </div>
     <div class="section-content card" id="options-section">
-      <div class="toggle-row">
-        <input type="checkbox" id="structureOnly">
-        <label for="structureOnly">Schema-only mode &mdash; prevent AI agents from running SQL queries</label>
+      <div class="field">
+        <label for="access">Access level</label>
+        <select id="access">
+          <option value="read">Read-only: schema plus SELECT queries</option>
+          <option value="structure">Schema only: no queries at all</option>
+          <option value="write">Read-write: agents can INSERT, UPDATE, DELETE, and run DDL</option>
+        </select>
+        <p class="field-note" id="accessNote"></p>
       </div>
     </div>
   </section>
@@ -752,7 +759,7 @@ $$('.copy-btn').forEach(btn => {
   })
 })
 
-// Browse buttons — open native file picker via server endpoint
+// Browse buttons: open native file picker via server endpoint
 $$('.browse-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const targetId = btn.dataset.target
@@ -797,7 +804,7 @@ function getParams() {
   if ($('#sshUser').value) p.sshUser = $('#sshUser').value
   if ($('#sshKey').value) p.sshKey = $('#sshKey').value
   if ($('#sshPassword').value) p.sshPassword = $('#sshPassword').value
-  if ($('#structureOnly').checked) p.structureOnly = true
+  if ($('#access').value !== 'read') p.access = $('#access').value
   return p
 }
 
@@ -818,13 +825,25 @@ function buildArgs(p) {
   if (p.sshPort) args.push('--ssh-port', p.sshPort)
   if (p.sshUser) args.push('--ssh-user', p.sshUser)
   if (p.sshKey) args.push('--ssh-key', p.sshKey)
-  if (p.structureOnly) args.push('--structure-only')
+  if (p.access === 'structure') args.push('--structure-only')
+  if (p.access === 'write') args.push('--allow-writes')
   return args
+}
+
+const ACCESS_NOTES = {
+  read: 'Queries run with the session pinned to read-only transactions.',
+  structure: 'Only overview and describe-tables are exposed.',
+  write: 'Adds the execute-write tool. Anything the database user is allowed to do, an agent can do.',
 }
 
 function updateConfig() {
   const p = getParams()
   const args = buildArgs(p)
+
+  const access = p.access || 'read'
+  const note = $('#accessNote')
+  note.textContent = ACCESS_NOTES[access]
+  note.classList.toggle('warn', access === 'write')
 
   const env = {}
   if (p.password) env.PGPASSWORD = p.password
@@ -904,7 +923,7 @@ $('#testBtn').addEventListener('click', async () => {
 
 // Update config on any input change
 $$('input').forEach(el => el.addEventListener('input', updateConfig))
-$$('input[type="checkbox"]').forEach(el => el.addEventListener('change', updateConfig))
+$$('select').forEach(el => el.addEventListener('change', updateConfig))
 
 updateConfig()
 

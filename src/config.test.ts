@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { configFromFlags, interpolateEnv, mergeTarget, parseConfig, parseJsonc, usedConnectionFlags } from './config.js'
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { rm, writeFile } from 'fs/promises'
+import { configFromFlags, interpolateEnv, mergeTarget, parseConfig, parseJsonc, resolveAccess, resolveConfig, usedConnectionFlags } from './config.js'
 
 describe('parseJsonc', () => {
   test('strips line comments, block comments, and trailing commas', () => {
@@ -72,6 +73,15 @@ describe('mergeTarget', () => {
     expect(merged).toEqual({ port: 6432, user: 'u', host: 'h', database: 'db' })
   })
 
+  test('access and its structureOnly alias override each other across levels', () => {
+    expect(mergeTarget({ access: 'write' }, { structureOnly: true })).toEqual({ access: 'structure' })
+    expect(mergeTarget({ structureOnly: true }, { access: 'write' })).toEqual({ access: 'write' })
+    expect(mergeTarget({ access: 'write' }, { host: 'h' })).toEqual({ access: 'write', host: 'h' })
+    // "not structure-only" is not a claim about read vs write
+    expect(mergeTarget({ access: 'write' }, { structureOnly: false })).toEqual({ access: 'write' })
+    expect(mergeTarget({}, {})).toEqual({})
+  })
+
   test('ssh blocks deep-merge so a target can override one field', () => {
     const merged = mergeTarget(
       { ssh: { host: 'bastion', user: 'deploy', key: '~/.ssh/id_rsa' } },
@@ -87,6 +97,15 @@ describe('parseConfig', () => {
     expect(() => parseConfig('{"defaultTarget": "b", "targets": {"a": {}}}', 'f')).toThrow('defaultTarget "b"')
     expect(() => parseConfig('{"targets": {"a": {"ssh": {"host": "bastion"}}}}', 'f')).toThrow('ssh requires host and user')
     expect(() => parseConfig('{"targets": {"a": {"ssh": {"host": "b", "user": "u"}}}}', 'f')).toThrow('key or password')
+    expect(() => parseConfig('{"targets": {"a": {"access": "readonly"}}}', 'f')).toThrow('access')
+    expect(() => parseConfig('{"targets": {"a": {"access": "write", "structureOnly": true}}}', 'f')).toThrow('structureOnly conflicts')
+  })
+
+  test('access resolves from either spelling, defaulting to read', () => {
+    const config = parseConfig('{"targets": {"a": {}, "b": {"structureOnly": true}, "c": {"access": "write"}}}', 'f')
+    expect(resolveAccess(config.targets.a)).toBe('read')
+    expect(resolveAccess(config.targets.b)).toBe('structure')
+    expect(resolveAccess(config.targets.c)).toBe('write')
   })
 
   test('merges defaults into every target', () => {
@@ -96,9 +115,39 @@ describe('parseConfig', () => {
   })
 })
 
+describe('resolveConfig', () => {
+  const configPath = new URL('../tusk.config.test.jsonc', import.meta.url).pathname
+
+  beforeAll(async () => {
+    await writeFile(configPath, '{"targets": {"a": {"host": "h"}, "b": {"access": "structure"}}}')
+  })
+  afterAll(async () => {
+    await rm(configPath)
+  })
+
+  test('access flags blanket every target, and cannot contradict each other', async () => {
+    const writes = await resolveConfig({ host: 'h', 'allow-writes': true })
+    expect(resolveAccess(writes.targets.db)).toBe('write')
+
+    const structure = await resolveConfig({ host: 'h', 'structure-only': true })
+    expect(resolveAccess(structure.targets.db)).toBe('structure')
+
+    await expect(resolveConfig({ host: 'h', 'structure-only': true, 'allow-writes': true }))
+      .rejects.toThrow('mutually exclusive')
+  })
+
+  test('--structure-only narrows a config file but --allow-writes cannot escalate one', async () => {
+    const narrowed = await resolveConfig({ config: configPath, 'structure-only': true })
+    expect(Object.values(narrowed.targets).map(resolveAccess)).toEqual(['structure', 'structure'])
+
+    await expect(resolveConfig({ config: configPath, 'allow-writes': true }))
+      .rejects.toThrow('cannot be combined with a config file')
+  })
+})
+
 describe('usedConnectionFlags', () => {
-  test('structure-only and config are mode flags, not connection flags', () => {
-    expect(usedConnectionFlags({ 'structure-only': true, config: 'x' })).toEqual([])
+  test('access and config are mode flags, not connection flags', () => {
+    expect(usedConnectionFlags({ 'structure-only': true, 'allow-writes': true, config: 'x' })).toEqual([])
     expect(usedConnectionFlags({ host: 'h', ssl: false })).toEqual(['host'])
   })
 })

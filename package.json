@@ -1,7 +1,7 @@
 {
   "name": "tusk-mcp",
-  "version": "0.2.0",
-  "description": "Read-only PostgreSQL MCP server for AI agents. Schema introspection and SELECT-only query execution.",
+  "version": "0.3.0",
+  "description": "PostgreSQL MCP server for AI agents. Schema introspection, SELECT-only query execution, and opt-in write access per target.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,8 @@
     "model-context-protocol",
     "database",
     "schema",
-    "read-only"
+    "read-only",
+    "sql"
   ],
   "bin": {
     "tusk-mcp": "dist/cli.mjs"

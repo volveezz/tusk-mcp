@@ -29,6 +29,14 @@ const sshSchema = z.object({
   password: z.string().optional(),
 }).strict()
 
+/**
+ * Per-target capability, widest first at the tool layer: `write` registers
+ * execute-write and drops the server-side read-only pin, `read` allows
+ * SELECT-family queries, `structure` exposes schema only.
+ */
+export const ACCESS_LEVELS = ['structure', 'read', 'write'] as const
+export type AccessLevel = (typeof ACCESS_LEVELS)[number]
+
 const targetSchema = z.object({
   host: z.string().optional(),
   port: z.number().int().optional(),
@@ -40,9 +48,19 @@ const targetSchema = z.object({
   connectionString: z.string().optional(),
   ssl: z.union([z.boolean(), sslFilesSchema]).optional(),
   ssh: sshSchema.optional(),
+  access: z.enum(ACCESS_LEVELS).optional(),
+  // superseded by access; still accepted so configs written against 0.2 load
   structureOnly: z.boolean().optional(),
   description: z.string().optional(),
-}).strict()
+}).strict().superRefine((target, ctx) => {
+  if (target.structureOnly === true && target.access !== undefined && target.access !== 'structure') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['access'],
+      message: `structureOnly conflicts with access "${target.access}"; drop structureOnly and keep access`,
+    })
+  }
+})
 
 const configFileSchema = z.object({
   defaultTarget: z.string().optional(),
@@ -58,6 +76,58 @@ export type TargetConfig = z.infer<typeof targetSchema>
 export interface TuskConfig {
   defaultTarget?: string
   targets: Record<string, TargetConfig>
+}
+
+/** Single reading of a target's capability, so no caller has to know structureOnly is a legacy spelling. */
+export function resolveAccess(target: TargetConfig): AccessLevel {
+  if (target.access) return target.access
+  return target.structureOnly ? 'structure' : 'read'
+}
+
+/**
+ * Turns CLI flags into the config the server runs on: an explicit --config,
+ * an auto-discovered file in cwd, or a single target built from flags and
+ * env. Access flags are applied last, over whichever source won.
+ */
+export async function resolveConfig(flags: ConnectionFlags): Promise<TuskConfig> {
+  const connectionFlags = usedConnectionFlags(flags)
+  if (flags['structure-only'] && flags['allow-writes']) {
+    throw new Error('--structure-only and --allow-writes are mutually exclusive')
+  }
+
+  let config: TuskConfig | undefined
+  let configPath: string | undefined
+  if (flags.config) {
+    if (connectionFlags.length > 0) {
+      throw new Error(`--config cannot be combined with connection flags (${connectionFlags.map(f => `--${f}`).join(', ')}); put connection settings in the config file`)
+    }
+    config = await loadConfigFrom(flags.config)
+    configPath = flags.config
+  } else if (connectionFlags.length === 0) {
+    const discovered = await discoverConfig()
+    if (discovered) {
+      config = discovered.config
+      configPath = discovered.path
+    }
+  }
+  if (config && configPath) {
+    console.error(`tusk-mcp: loaded ${configPath} (targets: ${Object.keys(config.targets).join(', ')})`)
+  }
+  config ??= configFromFlags(flags)
+
+  // --structure-only narrows and may safely blanket a config file; write
+  // access must be named per target in the file, so a flag on the MCP client
+  // command line can never silently escalate a target the file marked read
+  if (flags['allow-writes']) {
+    if (configPath) {
+      throw new Error(`--allow-writes cannot be combined with a config file (${configPath}); set "access": "write" on the targets that should accept writes`)
+    }
+    for (const target of Object.values(config.targets)) target.access = 'write'
+  }
+  if (flags['structure-only']) {
+    for (const target of Object.values(config.targets)) target.access = 'structure'
+  }
+  return config
 }
 
 export async function loadConfigFrom(path: string): Promise<TuskConfig> {
@@ -193,8 +263,8 @@ export function interpolateEnv(value: unknown): unknown {
 }
 
 export function mergeTarget(defaults: TargetConfig, target: TargetConfig): TargetConfig {
-  const base = defined(expandConnectionString(defaults))
-  const over = defined(expandConnectionString(target))
+  const base = defined(normalizeAccess(expandConnectionString(defaults)))
+  const over = defined(normalizeAccess(expandConnectionString(target)))
   const merged: TargetConfig = { ...base, ...over }
   if (typeof base.ssh === 'object' && typeof over.ssh === 'object') {
     merged.ssh = { ...base.ssh, ...defined(over.ssh) }
@@ -203,6 +273,22 @@ export function mergeTarget(defaults: TargetConfig, target: TargetConfig): Targe
     merged.ssl = { ...base.ssl, ...defined(over.ssl) }
   }
   return merged
+}
+
+/**
+ * Collapses structureOnly into access before the merge, so that a target
+ * setting one spelling overrides a defaults block using the other instead of
+ * both surviving into the merged object with conflicting meanings.
+ */
+function normalizeAccess(target: TargetConfig): TargetConfig {
+  if (target.access === undefined && target.structureOnly !== true) {
+    // structureOnly: false says "not structure-only", which is not a claim
+    // about read vs write; dropping it leaves defaults.access in charge
+    const { structureOnly, ...rest } = target
+    return rest
+  }
+  const { structureOnly, ...rest } = target
+  return { ...rest, access: resolveAccess(target) }
 }
 
 function expandConnectionString(target: TargetConfig): TargetConfig {

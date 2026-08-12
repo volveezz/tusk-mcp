@@ -24,6 +24,7 @@ export interface ConnectionFlags {
   'ssh-key'?: string
   'ssh-password'?: string
   'structure-only'?: boolean
+  'allow-writes'?: boolean
 }
 
 export interface PostgresConnectionOptions {
@@ -32,6 +33,8 @@ export interface PostgresConnectionOptions {
   user?: string
   password?: string
   database?: string
+  /** Pins the session to read-only transactions server-side; false only for access: "write" targets. */
+  readOnly: boolean
   ssl?: boolean | {
     rejectUnauthorized?: boolean
     ca?: string
@@ -98,6 +101,13 @@ export interface QueryResult {
   truncated: boolean
 }
 
+export interface WriteResult {
+  command: string
+  affectedRows: number
+  /** Present only when the statement produced rows (RETURNING, or a function call). */
+  returning?: QueryResult
+}
+
 export interface ColumnChange {
   column: string
   a: string | null
@@ -126,5 +136,6 @@ export interface PostgresClient {
   listTables(schema?: string): Promise<TableInfo[]>
   describeTable(table: string, schema: string): Promise<TableDescription>
   executeQuery(query: string, limit: number): Promise<QueryResult>
+  executeWrite(statement: string, limit: number): Promise<WriteResult>
   close(): Promise<void>
 }

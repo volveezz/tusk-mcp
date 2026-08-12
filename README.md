@@ -1,6 +1,6 @@
 # tusk-mcp
 
-Read-only PostgreSQL MCP server for AI agents. Exposes schema introspection and SELECT-only query execution over the Model Context Protocol.
+PostgreSQL MCP server for AI agents. Exposes schema introspection and SELECT-only query execution over the Model Context Protocol, with write access opt-in per target.
 
 ## Install
 
@@ -62,7 +62,7 @@ A config file defines named targets: environments (local/stage/prod) or entirely
     "database": "myapp"
   },
   "targets": {
-    "local": { "host": "localhost", "description": "dev" },
+    "local": { "host": "localhost", "access": "write", "description": "dev" },
     "stage": {
       "host": "stage.db.internal",
       "password": "${STAGE_DB_PASSWORD}",   // env var interpolation
@@ -71,7 +71,7 @@ A config file defines named targets: environments (local/stage/prod) or entirely
     "prod": {
       "connectionString": "postgres://ro:${PROD_DB_PASSWORD}@10.0.0.5:5432/myapp",
       "ssh": { "host": "bastion.example.com", "user": "deploy", "key": "~/.ssh/id_rsa" },
-      "structureOnly": true,                // per-target: schema visible, queries disabled
+      "access": "structure",                // schema visible, queries disabled
       "description": "production"
     },
     "analytics": { "host": "warehouse.db", "database": "events" }
@@ -79,7 +79,7 @@ A config file defines named targets: environments (local/stage/prod) or entirely
 }
 ```
 
-Target fields mirror the CLI flags: `host`, `port`, `user`, `password`, `passwordFile`, `passwordCmd`, `database`, `connectionString`, `ssl` (`true` or `{ca, cert, key}` paths), `ssh` (`{host, port, user, key, password}`), `structureOnly`, `description`.
+Target fields mirror the CLI flags: `host`, `port`, `user`, `password`, `passwordFile`, `passwordCmd`, `database`, `connectionString`, `ssl` (`true` or `{ca, cert, key}` paths), `ssh` (`{host, port, user, key, password}`), `access`, `description`. `structureOnly: true` is still read as `access: "structure"`; setting both to different levels is a config error.
 
 **Priority**: explicit fields > `connectionString` > `defaults`. `ssh`/`ssl` objects deep-merge, so `defaults.ssh` can hold the shared bastion and a target override just the port. `${VAR}` interpolates from the environment in any string, so the file is safe to commit. Config-file targets ignore `PG*` env vars; use `${PGPASSWORD}` explicitly if wanted.
 
@@ -113,13 +113,26 @@ tusk-mcp --host db-internal --database mydb \
   --ssh-host bastion.example.com --ssh-user deploy --ssh-key ~/.ssh/id_rsa
 ```
 
-## Structure-only mode
+## Access levels
 
-Agents see schema but cannot run queries. The `--structure-only` flag applies it to every target; per-target `structureOnly` in the config file keeps `execute-query` registered and rejects calls against that target only. When all targets are structure-only the tool is not registered at all.
+Each target has one access level, `read` by default.
+
+| `access` | Tools | Connection |
+|---|---|---|
+| `structure` | `overview`, `describe-tables` | read-only transactions |
+| `read` | plus `execute-query` | read-only transactions |
+| `write` | plus `execute-write` | writes allowed, through `execute-write` only |
 
 ```bash
-tusk-mcp --host db --database mydb --structure-only
+tusk-mcp --host db --database mydb --structure-only   # every target: structure
+tusk-mcp --host db --database mydb --allow-writes     # every target: write
 ```
+
+The two flags are mutually exclusive. `--structure-only` also narrows a config file, but `--allow-writes` is rejected alongside one: escalating a target to writes has to be written in the file, where it is reviewable, rather than in an MCP client's command line.
+
+`execute-query` cannot mutate on any target, write-enabled ones included: every query runs inside a `READ ONLY` transaction, so a `SELECT` that hides an `INSERT` behind a volatile function is refused by the server, not just by the SQL parser. `read` and `structure` connections additionally start with `default_transaction_read_only`. Writes therefore only ever happen through `execute-write`, which is registered only when some target allows them and whose `target` parameter lists write-enabled targets only.
+
+`execute-write` takes one statement per call, reports the affected row count, and previews `RETURNING` rows. Beyond the target gate it does not filter SQL: on a write target the database role is the boundary, so give that role only the privileges the agent should have.
 
 ## Tools
 
@@ -128,6 +141,7 @@ tusk-mcp --host db --database mydb --structure-only
 | `overview` | All schemas with tables, views, and estimated row counts in one call (partitions filtered out) |
 | `describe-tables` | Columns, types, PKs, FKs, and enum values for one or more tables per call |
 | `execute-query` | Read-only SQL with limit (rejected on structure-only targets) |
+| `execute-write` | One mutating statement with affected rows and `RETURNING` preview (write-enabled targets only) |
 | `compare-schemas` | Structural diff of a schema between two targets (multi-target only) |
 
 ## Output format
@@ -188,4 +202,5 @@ args = ["-y", "tusk-mcp", "--host", "localhost", "--database", "mydb"]
 | `--ssh-user` | string | - | SSH username |
 | `--ssh-key` | string | - | SSH private key path |
 | `--ssh-password` | string | - | SSH password |
-| `--structure-only` | boolean | false | Disable execute-query |
+| `--structure-only` | boolean | false | Schema only, no `execute-query` |
+| `--allow-writes` | boolean | false | Add `execute-write` (no config file) |

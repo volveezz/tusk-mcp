@@ -13,7 +13,8 @@ import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { createPostgresClient } from './client.js'
 import { createTunnel } from './tunnel.js'
-import type { TargetConfig, TuskConfig } from './config.js'
+import { resolveAccess } from './config.js'
+import type { AccessLevel, TargetConfig, TuskConfig } from './config.js'
 import type { PostgresClient, PostgresConnectionOptions, Tunnel } from './types.js'
 
 interface ActiveTarget {
@@ -39,15 +40,31 @@ export class TargetRegistry {
   }
 
   get anyQueryable(): boolean {
-    return this.names().some(name => !this.isStructureOnly(name))
+    return this.queryableNames().length > 0
+  }
+
+  get anyWritable(): boolean {
+    return this.writableNames().length > 0
   }
 
   queryableNames(): string[] {
     return this.names().filter(name => !this.isStructureOnly(name))
   }
 
+  writableNames(): string[] {
+    return this.names().filter(name => this.canWrite(name))
+  }
+
+  access(name: string): AccessLevel {
+    return resolveAccess(this.targetConfig(name))
+  }
+
   isStructureOnly(name: string): boolean {
-    return this.targetConfig(name).structureOnly ?? false
+    return this.access(name) === 'structure'
+  }
+
+  canWrite(name: string): boolean {
+    return this.access(name) === 'write'
   }
 
   description(name: string): string | undefined {
@@ -55,15 +72,28 @@ export class TargetRegistry {
   }
 
   targetShape(): Record<string, z.ZodTypeAny> {
-    if (!this.multiTarget) return {}
-    const fallback = this.config.defaultTarget
-    if (!fallback) return { target: this.targetEnum() }
-    return { target: this.targetEnum().optional().describe(`Defaults to ${fallback}`) }
+    return this.shapeFor(this.names())
+  }
+
+  /**
+   * Like targetShape() but narrowed to write-enabled targets, so a read-only
+   * target is not even expressible as an argument to execute-write.
+   */
+  writeTargetShape(): Record<string, z.ZodTypeAny> {
+    return this.shapeFor(this.writableNames())
   }
 
   targetEnum(): z.ZodEnum<[string, ...string[]]> {
     const names = this.names()
     return z.enum([names[0], ...names.slice(1)])
+  }
+
+  /** Omits the param entirely for a single target, and makes it optional only when the default is in `allowed`. */
+  private shapeFor(allowed: string[]): Record<string, z.ZodTypeAny> {
+    if (!this.multiTarget || allowed.length === 0) return {}
+    const enumSchema = z.enum([allowed[0], ...allowed.slice(1)])
+    const fallback = this.defaultTarget && allowed.includes(this.defaultTarget) ? this.defaultTarget : undefined
+    return { target: fallback ? enumSchema.optional().describe(`Defaults to ${fallback}`) : enumSchema }
   }
 
   resolveName(requested?: string): string {
@@ -121,6 +151,7 @@ export class TargetRegistry {
       password: await resolvePassword(target),
       database: target.database,
       ssl: await resolveSsl(target.ssl),
+      readOnly: resolveAccess(target) !== 'write',
     }
 
     let tunnel: Tunnel | undefined

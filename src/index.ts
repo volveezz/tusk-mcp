@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from 'util'
-import { configFromFlags, discoverConfig, loadConfigFrom, usedConnectionFlags } from './config.js'
-import type { TuskConfig } from './config.js'
+import { resolveConfig } from './config.js'
 import { TargetRegistry } from './targets.js'
 import { TuskMcpServer } from './server.js'
 import type { ConnectionFlags } from './types.js'
 
 function printUsage(): void {
   const lines = [
-    'tusk-mcp - Read-only PostgreSQL MCP server for AI agents',
+    'tusk-mcp - PostgreSQL MCP server for AI agents, read-only by default',
     '',
     'Usage:',
     '  tusk-mcp --host <host> --database <db>     Start MCP server (stdio)',
@@ -18,7 +17,8 @@ function printUsage(): void {
     'Config file:',
     '  Auto-loads tusk.config.jsonc|json from cwd when no connection flags are set.',
     '  --config <path> loads an explicit file. Named targets (local/stage/prod or',
-    '  separate databases), per-target structureOnly, selected via target param.',
+    '  separate databases), per-target access (structure|read|write), selected',
+    '  via the target param.',
     '',
     'Connection:',
     '  --host <host>              PostgreSQL host (default: localhost)',
@@ -44,7 +44,8 @@ function printUsage(): void {
     '  --ssh-password <pass>      SSH password',
     '',
     'Options:',
-    '  --structure-only           Disable execute-query tool',
+    '  --structure-only           Schema only, no execute-query tool',
+    '  --allow-writes             Add execute-write for mutating SQL (no config file)',
     '',
     'This is an MCP server that communicates over stdio.',
     'It should be launched by an MCP client (Claude Desktop, Cursor, etc.),',
@@ -53,31 +54,6 @@ function printUsage(): void {
     'Run "tusk-mcp setup" to configure your MCP client interactively.',
   ]
   console.log(lines.join('\n'))
-}
-
-async function resolveConfig(flags: ConnectionFlags): Promise<TuskConfig> {
-  const connectionFlags = usedConnectionFlags(flags)
-
-  let config: TuskConfig | undefined
-  if (flags.config) {
-    if (connectionFlags.length > 0) {
-      throw new Error(`--config cannot be combined with connection flags (${connectionFlags.map(f => `--${f}`).join(', ')}); put connection settings in the config file`)
-    }
-    config = await loadConfigFrom(flags.config)
-    console.error(`tusk-mcp: loaded ${flags.config} (targets: ${Object.keys(config.targets).join(', ')})`)
-  } else if (connectionFlags.length === 0) {
-    const discovered = await discoverConfig()
-    if (discovered) {
-      config = discovered.config
-      console.error(`tusk-mcp: loaded ${discovered.path} (targets: ${Object.keys(config.targets).join(', ')})`)
-    }
-  }
-  config ??= configFromFlags(flags)
-
-  if (flags['structure-only']) {
-    for (const target of Object.values(config.targets)) target.structureOnly = true
-  }
-  return config
 }
 
 function parsePort(value: string | undefined, flag: string): number | undefined {
@@ -122,6 +98,7 @@ async function main() {
       'ssh-key': { type: 'string' },
       'ssh-password': { type: 'string' },
       'structure-only': { type: 'boolean', default: false },
+      'allow-writes': { type: 'boolean', default: false },
     },
     strict: true,
   })

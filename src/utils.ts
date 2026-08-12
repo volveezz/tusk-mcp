@@ -5,6 +5,7 @@ import type {
   SchemaInfo,
   TableDescription,
   TableInfo,
+  WriteResult,
 } from './types.js'
 
 const ALLOWED_PREFIXES = ['SELECT', 'WITH', 'EXPLAIN', 'SHOW', 'VALUES', 'TABLE']
@@ -147,19 +148,38 @@ export function formatSchemaDiffResult(diff: SchemaDiff): ToolResult {
 }
 
 export function formatQueryResult(target: string, multiTarget: boolean, result: QueryResult): ToolResult {
+  return {
+    content: [{ type: 'text', text: prefixTarget(renderQueryResult(result), target, multiTarget) }],
+    structuredContent: { target, result: queryPreview(result) },
+  }
+}
+
+export function formatWriteResult(target: string, multiTarget: boolean, result: WriteResult): ToolResult {
+  const header = `${result.command} affected=${result.affectedRows}`
+  const text = result.returning ? `${header}\n${renderQueryResult(result.returning)}` : header
+  const structuredContent: Record<string, unknown> = {
+    target,
+    command: result.command,
+    affectedRows: result.affectedRows,
+  }
+  if (result.returning) structuredContent.returning = queryPreview(result.returning)
+
+  return {
+    content: [{ type: 'text', text: prefixTarget(text, target, multiTarget) }],
+    structuredContent,
+  }
+}
+
+/** Row preview shared by execute-query and execute-write RETURNING output. */
+function queryPreview(result: QueryResult) {
   const previewRows = result.rows.slice(0, QUERY_TEXT_PREVIEW_ROWS)
-  const structuredResult = {
+  return {
     columns: result.columns,
     rows: previewRows.map(row => normalizeRow(row)),
     rowCount: result.rowCount,
     previewRowCount: previewRows.length,
     truncated: result.truncated,
     previewTruncated: previewRows.length < result.rows.length,
-  }
-
-  return {
-    content: [{ type: 'text', text: prefixTarget(renderQueryResult(result), target, multiTarget) }],
-    structuredContent: { target, result: structuredResult },
   }
 }
 

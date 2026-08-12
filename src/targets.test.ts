@@ -4,7 +4,8 @@ import { TargetRegistry } from './targets.js'
 const multi = new TargetRegistry({
   defaultTarget: 'local',
   targets: {
-    local: {},
+    local: { access: 'write' },
+    stage: {},
     prod: { structureOnly: true, description: 'production' },
   },
 })
@@ -30,11 +31,32 @@ describe('TargetRegistry', () => {
     expect(noDefault.targetShape().target.safeParse('ghost').success).toBe(false)
   })
 
-  test('structure-only gating', () => {
-    expect(multi.isStructureOnly('prod')).toBe(true)
-    expect(multi.isStructureOnly('local')).toBe(false)
+  test('access gating across the three levels', () => {
+    expect(multi.access('prod')).toBe('structure')
+    expect(multi.access('stage')).toBe('read')
+    expect(multi.access('local')).toBe('write')
     expect(multi.anyQueryable).toBe(true)
-    expect(multi.queryableNames()).toEqual(['local'])
+    expect(multi.queryableNames()).toEqual(['local', 'stage'])
+    expect(multi.anyWritable).toBe(true)
+    expect(multi.writableNames()).toEqual(['local'])
     expect(new TargetRegistry({ targets: { a: { structureOnly: true } } }).anyQueryable).toBe(false)
+    expect(new TargetRegistry({ targets: { a: {} } }).anyWritable).toBe(false)
+  })
+
+  test('writeTargetShape only accepts write-enabled targets', () => {
+    const target = multi.writeTargetShape().target
+    expect(target.safeParse('local').success).toBe(true)
+    expect(target.safeParse('stage').success).toBe(false)
+    expect(target.safeParse(undefined).success).toBe(true)
+    expect(new TargetRegistry({ targets: { db: { access: 'write' } } }).writeTargetShape()).toEqual({})
+  })
+
+  test('writeTargetShape requires an explicit target when the default cannot write', () => {
+    const registry = new TargetRegistry({
+      defaultTarget: 'stage',
+      targets: { stage: {}, local: { access: 'write' } },
+    })
+    expect(registry.writeTargetShape().target.safeParse(undefined).success).toBe(false)
+    expect(registry.writeTargetShape().target.safeParse('local').success).toBe(true)
   })
 })

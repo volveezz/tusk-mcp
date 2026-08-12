@@ -6,7 +6,37 @@ import type {
   TableInfo,
   TableDescription,
   QueryResult,
+  WriteResult,
 } from './types.js'
+
+/**
+ * Every execute-query statement runs here, write-enabled targets included:
+ * their pool cannot carry the read-only session pin, so the transaction is
+ * what keeps `SELECT some_writing_function()` from mutating through a tool
+ * that advertises readOnlyHint. The cast restores postgres.js result
+ * metadata (count, columns) that begin()'s array-unwrapping type discards.
+ */
+function readOnlyTransaction(sql: postgres.Sql, statement: string): Promise<postgres.RowList<postgres.Row[]>> {
+  return sql.begin(async tx => {
+    await run(tx, 'SET TRANSACTION READ ONLY')
+    return await run(tx, statement)
+  }) as unknown as Promise<postgres.RowList<postgres.Row[]>>
+}
+
+/**
+ * simple: false forces the extended protocol, whose one-command-per-message
+ * rule is what stops `INSERT ...; DROP TABLE ...` from running as a single
+ * tool call reported under the last command's tag. prepare stays off (the
+ * postgres.js default for unsafe), so arbitrary agent SQL does not accumulate
+ * named prepared statements on the server.
+ */
+function run(sql: postgres.Sql | postgres.TransactionSql, statement: string): postgres.PendingQuery<postgres.Row[]> {
+  return sql.unsafe(statement, [], EXTENDED_PROTOCOL)
+}
+
+// postgres.js reads `simple` at runtime (src/index.js unsafe()) but leaves it
+// out of UnsafeQueryOptions, which only declares `prepare`
+const EXTENDED_PROTOCOL = { simple: false } as postgres.UnsafeQueryOptions
 
 export function createPostgresClient(options: PostgresConnectionOptions): PostgresClient {
   const sql = postgres({
@@ -21,7 +51,13 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
     max: 5,
     idle_timeout: 30,
     connect_timeout: 10,
-    connection: { application_name: 'tusk-mcp' },
+    // default_transaction_read_only is the backstop for the SQL parser in
+    // utils.ts: even a statement that slips past it (a volatile function
+    // behind a SELECT, say) is refused by the server on a read-only target
+    connection: {
+      application_name: 'tusk-mcp',
+      default_transaction_read_only: options.readOnly,
+    },
   })
 
   return {
@@ -163,27 +199,31 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
     },
 
     async executeQuery(query: string, limit: number): Promise<QueryResult> {
-      const effectiveLimit = Math.min(limit, 5000)
       const cleaned = query.replace(/;\s*$/, '').trim()
-      const fetchCount = effectiveLimit + 1
+      const fetchCount = limit + 1
       const firstWord = cleaned.split(/[\s(]/, 1)[0]?.toUpperCase()
 
       let rows: postgres.RowList<postgres.Row[]>
       // SHOW/EXPLAIN reject LIMIT in any form; run them raw and truncate below
       if (firstWord === 'SHOW' || firstWord === 'EXPLAIN') {
-        rows = await sql.unsafe(cleaned)
+        rows = await readOnlyTransaction(sql, cleaned)
       } else {
         try {
-          rows = await sql.unsafe(
-            `SELECT * FROM (${cleaned}) AS _tusk_result LIMIT ${fetchCount}`
-          )
-        } catch {
-          rows = await sql.unsafe(`${cleaned} LIMIT ${fetchCount}`)
+          rows = await readOnlyTransaction(sql, `SELECT * FROM (${cleaned}) AS _tusk_result LIMIT ${fetchCount}`)
+        } catch (wrappedErr) {
+          try {
+            // a fresh transaction, not a retry inside the aborted one
+            rows = await readOnlyTransaction(sql, `${cleaned} LIMIT ${fetchCount}`)
+          } catch {
+            // the wrapped form's error describes the query as written, while
+            // the fallback's may just complain about the appended LIMIT
+            throw wrappedErr
+          }
         }
       }
 
-      const truncated = rows.length > effectiveLimit
-      const resultRows = truncated ? rows.slice(0, effectiveLimit) : [...rows]
+      const truncated = rows.length > limit
+      const resultRows = truncated ? rows.slice(0, limit) : [...rows]
       const columns = rows.length > 0 ? Object.keys(rows[0]) : (rows.columns?.map(c => c.name) ?? [])
 
       return {
@@ -191,6 +231,34 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
         rows: resultRows as Record<string, unknown>[],
         rowCount: resultRows.length,
         truncated,
+      }
+    },
+
+    // No LIMIT wrapping: a write statement's shape is the caller's, and
+    // RETURNING output is truncated after the fact so the row count the
+    // server reports stays the true number of affected rows
+    async executeWrite(statement: string, limit: number): Promise<WriteResult> {
+      const rows = await run(sql, statement.replace(/;\s*$/, '').trim())
+      const columns = rows.columns?.map(c => c.name) ?? []
+      // DDL reports no row count, a comment-only statement reports no command
+      const affectedRows = rows.count ?? 0
+      const command = rows.command ?? 'EMPTY'
+
+      if (columns.length === 0) {
+        return { command, affectedRows }
+      }
+
+      const truncated = rows.length > limit
+      const returnedRows = truncated ? rows.slice(0, limit) : [...rows]
+      return {
+        command,
+        affectedRows,
+        returning: {
+          columns,
+          rows: returnedRows as Record<string, unknown>[],
+          rowCount: returnedRows.length,
+          truncated,
+        },
       }
     },
 

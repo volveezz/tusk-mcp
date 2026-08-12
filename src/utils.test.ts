@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { formatQueryResult, formatTableDescriptionsResult } from './utils.js'
+import { formatQueryResult, formatTableDescriptionsResult, formatWriteResult } from './utils.js'
 
 describe('formatQueryResult', () => {
   test('distinguishes null, empty strings, and literal null sentinels', () => {
@@ -61,6 +61,31 @@ describe('formatQueryResult', () => {
     expect(JSON.stringify(result.structuredContent)).toBe(
       '{"target":"db","result":{"columns":["big","date","nan"],"rows":[{"big":"10","date":"2026-05-15T10:00:00.000Z","nan":"NaN"}],"rowCount":1,"previewRowCount":1,"truncated":false,"previewTruncated":false}}',
     )
+  })
+})
+
+describe('formatWriteResult', () => {
+  test('reports command and affected rows, with no returning key when nothing came back', () => {
+    const result = formatWriteResult('local', false, { command: 'UPDATE', affectedRows: 3 })
+
+    expect(result.content[0].text).toBe('UPDATE affected=3')
+    expect(result.structuredContent).toEqual({ target: 'local', command: 'UPDATE', affectedRows: 3 })
+  })
+
+  test('previews RETURNING rows under the affected-row header', () => {
+    const result = formatWriteResult('local', true, {
+      command: 'INSERT',
+      affectedRows: 2,
+      returning: {
+        columns: ['id'],
+        rows: [{ id: 1 }, { id: 2 }],
+        rowCount: 2,
+        truncated: false,
+      },
+    })
+
+    expect(result.content[0].text.startsWith('target=local\nINSERT affected=2\nrows=2 cols=1')).toBe(true)
+    expect(result.structuredContent?.returning).toMatchObject({ rowCount: 2, previewRowCount: 2 })
   })
 })
 
