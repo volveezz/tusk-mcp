@@ -1,13 +1,3 @@
-/**
- * Lazy connection registry: one entry per named target from TuskConfig.
- * Pool, password source, SSL material, and SSH tunnel are resolved on the
- * first tool call touching a target, so an unreachable target never blocks
- * startup or the other targets. Failures before the pool exists (password
- * source, SSL files, tunnel) evict the entry and retry on next use; the
- * pool itself connects lazily inside postgres.js.
- * Also owns the `target` input field tools spread into their schemas
- * (absent entirely for single-target configs).
- */
 import { execSync } from 'child_process'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
@@ -71,7 +61,7 @@ export class TargetRegistry {
     return this.targetConfig(name).description
   }
 
-  targetShape(): Record<string, z.ZodTypeAny> {
+  targetShape(): Record<string, z.ZodType> {
     return this.shapeFor(this.names())
   }
 
@@ -79,19 +69,18 @@ export class TargetRegistry {
    * Like targetShape() but narrowed to write-enabled targets, so a read-only
    * target is not even expressible as an argument to execute-write.
    */
-  writeTargetShape(): Record<string, z.ZodTypeAny> {
+  writeTargetShape(): Record<string, z.ZodType> {
     return this.shapeFor(this.writableNames())
   }
 
-  targetEnum(): z.ZodEnum<[string, ...string[]]> {
-    const names = this.names()
-    return z.enum([names[0], ...names.slice(1)])
+  targetEnum() {
+    return z.enum(this.names())
   }
 
   /** Omits the param entirely for a single target, and makes it optional only when the default is in `allowed`. */
-  private shapeFor(allowed: string[]): Record<string, z.ZodTypeAny> {
+  private shapeFor(allowed: string[]): Record<string, z.ZodType> {
     if (!this.multiTarget || allowed.length === 0) return {}
-    const enumSchema = z.enum([allowed[0], ...allowed.slice(1)])
+    const enumSchema = z.enum(allowed)
     const fallback = this.defaultTarget && allowed.includes(this.defaultTarget) ? this.defaultTarget : undefined
     return { target: fallback ? enumSchema.optional().describe(`Defaults to ${fallback}`) : enumSchema }
   }

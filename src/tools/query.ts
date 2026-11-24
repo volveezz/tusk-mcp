@@ -1,9 +1,3 @@
-/**
- * `execute-query` tool: read-only SQL against a target, on every target that
- * is not structure-only, write-enabled ones included. Registered only when at
- * least one target allows queries; structure-only targets reject at call time
- * so one open target never unlocks the others.
- */
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { TargetRegistry } from '../targets.js'
@@ -29,7 +23,7 @@ export function registerQueryTools(server: McpServer, registry: TargetRegistry):
         target: z.string(),
         result: z.object({
           columns: z.array(z.string()),
-          rows: z.array(z.record(z.unknown())),
+          rows: z.array(z.record(z.string(), z.unknown())),
           rowCount: z.number(),
           previewRowCount: z.number(),
           truncated: z.boolean(),

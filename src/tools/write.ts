@@ -1,11 +1,3 @@
-/**
- * `execute-write` tool: mutating SQL against targets configured with
- * access: "write". Registered only when such a target exists, and its target
- * enum lists write-enabled targets only, so read targets cannot be named
- * here at all. Read and structure targets also run with
- * default_transaction_read_only on, which makes the server the last word
- * regardless of this gate.
- */
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { TargetRegistry } from '../targets.js'
@@ -38,7 +30,7 @@ export function registerWriteTools(server: McpServer, registry: TargetRegistry):
         affectedRows: z.number(),
         returning: z.object({
           columns: z.array(z.string()),
-          rows: z.array(z.record(z.unknown())),
+          rows: z.array(z.record(z.string(), z.unknown())),
           rowCount: z.number(),
           previewRowCount: z.number(),
           truncated: z.boolean(),

@@ -1,10 +1,3 @@
-/**
- * Config resolution: tusk.config.jsonc|json (cwd auto-discovery or --config)
- * with named targets + defaults + ${ENV_VAR} interpolation, or a single
- * unnamed target built from CLI flags / DATABASE_URL / PG* env vars.
- * TargetConfig/TuskConfig types are inferred from the zod schemas here.
- * Consumed by index.ts; targets connect lazily in targets.ts.
- */
 import { readFile } from 'fs/promises'
 import { resolve } from 'path'
 import { z } from 'zod'
@@ -50,13 +43,12 @@ const targetSchema = z.object({
   ssh: sshSchema.optional(),
   proxyCommand: z.string().optional(),
   access: z.enum(ACCESS_LEVELS).optional(),
-  // superseded by access; still accepted so configs written against 0.2 load
   structureOnly: z.boolean().optional(),
   description: z.string().optional(),
 }).strict().superRefine((target, ctx) => {
   if (target.structureOnly === true && target.access !== undefined && target.access !== 'structure') {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['access'],
       message: `structureOnly conflicts with access "${target.access}"; drop structureOnly and keep access`,
     })
@@ -64,7 +56,7 @@ const targetSchema = z.object({
   if (target.proxyCommand === undefined) return
   if (target.ssh !== undefined) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['proxyCommand'],
       message: 'proxyCommand and ssh both describe the hop to the database; keep one',
     })
@@ -72,7 +64,7 @@ const targetSchema = z.object({
   const placed = (['host', 'port'] as const).filter(field => target[field] !== undefined)
   if (placed.length > 0) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['proxyCommand'],
       message: `${placed.join(' and ')} cannot be combined with proxyCommand, which reaches the database itself`,
     })
