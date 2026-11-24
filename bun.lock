@@ -4,17 +4,15 @@
   "workspaces": {
     "": {
       "name": "tusk-mcp",
-      "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.32.2",
-        "postgres": "^3.4.9",
-        "ssh2": "^1.17.0",
-        "zod": "^4.6.7",
-      },
       "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.32.2",
         "@types/node": "^22.20.5",
         "@types/ssh2": "^1.15.6",
         "bun-types": "^1.4.5",
+        "postgres": "^3.4.9",
+        "ssh2": "^1.17.0",
         "typescript": "^5.9.3",
+        "zod": "^4.6.7",
       },
     },
   },

@@ -37,22 +37,18 @@
     "dev": "bun run src/index.ts",
     "check": "tsc --noEmit && bun test",
     "test": "bun test",
-    "build:npm": "bun build src/index.ts --outfile dist/cli.mjs --target=node --packages external",
+    "build:npm": "bun build src/index.ts --outfile dist/cli.mjs --target=node --minify --external cpu-features",
     "prepublishOnly": "bun run build:npm",
-    "build": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/tusk-mcp.exe",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/tusk-mcp",
-    "build:macos": "bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/tusk-mcp"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "postgres": "^3.4.9",
-    "ssh2": "^1.17.0",
-    "zod": "^4.6.7"
+    "build": "bun build --compile --bytecode --minify --format=esm --splitting src/index.ts --outfile dist/tusk-mcp"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^22.20.5",
     "@types/ssh2": "^1.15.6",
     "bun-types": "^1.4.5",
-    "typescript": "^5.9.3"
+    "postgres": "^3.4.9",
+    "ssh2": "^1.17.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.6.7"
   }
 }

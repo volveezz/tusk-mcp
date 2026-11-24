@@ -1,16 +1,11 @@
-/**
- * Loopback endpoint that fronts a database reachable only through a hop:
- * an ssh2 tunnel from explicit credentials, or a proxy command whose stdio
- * carries the pgwire stream (ssh with the caller's own config, docker or
- * kubectl exec). Both hand targets.ts a host:port for postgres.js.
- */
-import { Client } from 'ssh2'
 import { spawn, type ChildProcess } from 'child_process'
 import net from 'net'
 import { readFile } from 'fs/promises'
 import type { TunnelOptions, Tunnel } from './types.js'
 
 export async function createTunnel(options: TunnelOptions): Promise<Tunnel> {
+  // ssh2 costs ~16 MB RSS and ~5 ms at startup; measured 2026-11 on a bun --compile build
+  const { Client } = await import('ssh2')
   const ssh = new Client()
 
   const privateKey = options.sshKey

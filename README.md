@@ -24,9 +24,8 @@ npx tusk-mcp setup
 ## Build standalone binary
 
 ```bash
-bun run build           # Windows
-bun run build:linux     # Linux
-bun run build:macos     # macOS ARM
+bun run build                            # host platform, dist/tusk-mcp
+bun run build --target=bun-windows-x64   # cross-compile: bun-linux-arm64, bun-darwin-arm64, ...
 ```
 
 ## Connection
