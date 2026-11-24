@@ -12,7 +12,7 @@ import { execSync } from 'child_process'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { createPostgresClient } from './client.js'
-import { createTunnel } from './tunnel.js'
+import { createProxyCommandTunnel, createTunnel } from './tunnel.js'
 import { resolveAccess } from './config.js'
 import type { AccessLevel, TargetConfig, TuskConfig } from './config.js'
 import type { PostgresClient, PostgresConnectionOptions, Tunnel } from './types.js'
@@ -113,8 +113,20 @@ export class TargetRegistry {
       pending = this.connect(name)
       this.active.set(name, pending)
       pending.catch(() => this.active.delete(name))
+      pending.then(({ tunnel }) => tunnel?.broken?.then(err => this.discard(name, pending!, err)), () => {})
     }
     return (await pending).client
+  }
+
+  /** A hop that died mid-session takes its target's entry with it, so the next tool call reconnects and reports the live reason. */
+  private discard(name: string, entry: Promise<ActiveTarget>, err: Error): void {
+    if (this.active.get(name) !== entry) return
+    this.active.delete(name)
+    console.error(`tusk-mcp: target "${name}" disconnected: ${err.message}`)
+    entry.then(async ({ client, tunnel }) => {
+      await client.close(0).catch(() => {})
+      await tunnel?.close()
+    }).catch(() => {})
   }
 
   async closeAll(): Promise<void> {
@@ -155,7 +167,9 @@ export class TargetRegistry {
     }
 
     let tunnel: Tunnel | undefined
-    if (target.ssh) {
+    if (target.proxyCommand) {
+      tunnel = await createProxyCommandTunnel(target.proxyCommand)
+    } else if (target.ssh) {
       const { host: sshHost, user: sshUser } = target.ssh
       if (!sshHost || !sshUser) throw new Error('ssh config requires host and user')
       tunnel = await createTunnel({
@@ -167,6 +181,8 @@ export class TargetRegistry {
         targetHost: options.host,
         targetPort: options.port,
       })
+    }
+    if (tunnel) {
       options.host = tunnel.localHost
       options.port = tunnel.localPort
     }

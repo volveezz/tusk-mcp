@@ -79,7 +79,7 @@ A config file defines named targets: environments (local/stage/prod) or entirely
 }
 ```
 
-Target fields mirror the CLI flags: `host`, `port`, `user`, `password`, `passwordFile`, `passwordCmd`, `database`, `connectionString`, `ssl` (`true` or `{ca, cert, key}` paths), `ssh` (`{host, port, user, key, password}`), `access`, `description`. `structureOnly: true` is still read as `access: "structure"`; setting both to different levels is a config error.
+Target fields mirror the CLI flags: `host`, `port`, `user`, `password`, `passwordFile`, `passwordCmd`, `database`, `connectionString`, `ssl` (`true` or `{ca, cert, key}` paths), `ssh` (`{host, port, user, key, password}`), `proxyCommand`, `access`, `description`. `structureOnly: true` is still read as `access: "structure"`; setting both to different levels is a config error.
 
 **Priority**: explicit fields > `connectionString` > `defaults`. `ssh`/`ssl` objects deep-merge, so `defaults.ssh` can hold the shared bastion and a target override just the port. `${VAR}` interpolates from the environment in any string, so the file is safe to commit. Config-file targets ignore `PG*` env vars; use `${PGPASSWORD}` explicitly if wanted.
 
@@ -112,6 +112,26 @@ tusk-mcp --host db --database mydb \                               # mutual TLS
 tusk-mcp --host db-internal --database mydb \
   --ssh-host bastion.example.com --ssh-user deploy --ssh-key ~/.ssh/id_rsa
 ```
+
+## Proxy command
+
+For databases behind something the built-in tunnel cannot express, a command's stdio can carry the connection, the way OpenSSH's `ProxyCommand` does. tusk listens on a loopback port and spawns one child per connection.
+
+```bash
+# your own ssh config, agent, and jump hosts, rather than tusk's ssh2 client
+tusk-mcp --database mydb --proxy-command 'ssh bastion nc db.internal 5432'
+
+# a database published nowhere, reachable only inside a container network
+tusk-mcp --database mydb --proxy-command \
+  'ssh swarm-node sudo docker run --rm -i --network app_net alpine/socat - TCP:postgres:5432'
+
+# kubernetes, or anything else that speaks stdio
+tusk-mcp --database mydb --proxy-command 'kubectl exec -i deploy/pg -- socat - TCP:localhost:5432'
+```
+
+In a config file it is the `proxyCommand` field. It and `ssh` both describe the hop to the database, so a target sets one; a target setting either replaces the other inherited from `defaults`. `host` and `port` are rejected alongside it, since the command reaches the database itself, while a `connectionString` on such a target still supplies user, password, and database.
+
+The command is spawned once when the target connects, and a command that exits during that probe fails the tool call with its own stderr (`target "prod": proxyCommand exited 255: ssh: Could not resolve hostname ...`). After that it runs per connection, in its own process group so a piped command is killed whole. Three consecutive hops that carry no data stop the tunnel accepting for 30 seconds, since postgres.js reconnects without backoff.
 
 ## Access levels
 
@@ -202,5 +222,6 @@ args = ["-y", "tusk-mcp", "--host", "localhost", "--database", "mydb"]
 | `--ssh-user` | string | - | SSH username |
 | `--ssh-key` | string | - | SSH private key path |
 | `--ssh-password` | string | - | SSH password |
+| `--proxy-command` | string | - | Shell command whose stdio carries the connection |
 | `--structure-only` | boolean | false | Schema only, no `execute-query` |
 | `--allow-writes` | boolean | false | Add `execute-write` (no config file) |

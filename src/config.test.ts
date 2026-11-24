@@ -89,6 +89,14 @@ describe('mergeTarget', () => {
     )
     expect(merged.ssh).toEqual({ host: 'bastion', user: 'deploy', key: '~/.ssh/id_rsa', port: 2222 })
   })
+
+  test('a target naming one hop drops the other, and any address, inherited from defaults', () => {
+    const ssh = { host: 'bastion', user: 'deploy', key: '~/.ssh/id_rsa' }
+    expect(mergeTarget({ ssh, host: 'db.internal', port: 6432, user: 'app' }, { proxyCommand: 'ssh node nc db 5432' }))
+      .toEqual({ proxyCommand: 'ssh node nc db 5432', user: 'app' })
+    expect(mergeTarget({ proxyCommand: 'ssh node nc db 5432' }, { ssh })).toEqual({ ssh })
+    expect(mergeTarget({ ssh }, { host: 'h' })).toEqual({ ssh, host: 'h' })
+  })
 })
 
 describe('parseConfig', () => {
@@ -98,6 +106,10 @@ describe('parseConfig', () => {
     expect(() => parseConfig('{"targets": {"a": {"ssh": {"host": "bastion"}}}}', 'f')).toThrow('ssh requires host and user')
     expect(() => parseConfig('{"targets": {"a": {"ssh": {"host": "b", "user": "u"}}}}', 'f')).toThrow('key or password')
     expect(() => parseConfig('{"targets": {"a": {"access": "readonly"}}}', 'f')).toThrow('access')
+    expect(() => parseConfig('{"targets": {"a": {"proxyCommand": "nc db 5432", "ssh": {"host": "b", "user": "u", "key": "k"}}}}', 'f'))
+      .toThrow('keep one')
+    expect(() => parseConfig('{"targets": {"a": {"proxyCommand": "nc db 5432", "host": "db", "port": 5432}}}', 'f'))
+      .toThrow('host and port cannot be combined with proxyCommand')
     expect(() => parseConfig('{"targets": {"a": {"access": "write", "structureOnly": true}}}', 'f')).toThrow('structureOnly conflicts')
   })
 
@@ -171,5 +183,15 @@ describe('configFromFlags', () => {
     const config = configFromFlags({ 'password-file': '/run/secrets/pw' })
     expect(config.targets.db.password).toBeUndefined()
     expect(config.targets.db.passwordFile).toBe('/run/secrets/pw')
+  })
+
+  test('proxy-command owns the hop, over env addresses, ssh flags, and host flags', () => {
+    process.env.PGHOST = 'env-host'
+    expect(configFromFlags({ 'proxy-command': 'ssh node nc db 5432', database: 'mydb' }).targets.db)
+      .toEqual({ proxyCommand: 'ssh node nc db 5432', database: 'mydb' })
+    expect(() => configFromFlags({ 'proxy-command': 'x', 'ssh-host': 'bastion', 'ssh-user': 'u', 'ssh-key': 'k' }))
+      .toThrow('keep one')
+    expect(() => configFromFlags({ 'proxy-command': 'x', host: 'db' }))
+      .toThrow('--host cannot be combined with --proxy-command')
   })
 })

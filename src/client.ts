@@ -262,8 +262,10 @@ export function createPostgresClient(options: PostgresConnectionOptions): Postgr
       }
     },
 
-    async close(): Promise<void> {
-      await sql.end()
+    // timeout 0 destroys the pool, so queries waiting on a hop that is never
+    // coming back reject instead of retrying for the life of the process
+    async close(timeout?: number): Promise<void> {
+      await sql.end(timeout === undefined ? undefined : { timeout })
     },
   }
 }

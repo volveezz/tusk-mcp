@@ -48,6 +48,7 @@ const targetSchema = z.object({
   connectionString: z.string().optional(),
   ssl: z.union([z.boolean(), sslFilesSchema]).optional(),
   ssh: sshSchema.optional(),
+  proxyCommand: z.string().optional(),
   access: z.enum(ACCESS_LEVELS).optional(),
   // superseded by access; still accepted so configs written against 0.2 load
   structureOnly: z.boolean().optional(),
@@ -58,6 +59,22 @@ const targetSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['access'],
       message: `structureOnly conflicts with access "${target.access}"; drop structureOnly and keep access`,
+    })
+  }
+  if (target.proxyCommand === undefined) return
+  if (target.ssh !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['proxyCommand'],
+      message: 'proxyCommand and ssh both describe the hop to the database; keep one',
+    })
+  }
+  const placed = (['host', 'port'] as const).filter(field => target[field] !== undefined)
+  if (placed.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['proxyCommand'],
+      message: `${placed.join(' and ')} cannot be combined with proxyCommand, which reaches the database itself`,
     })
   }
 })
@@ -266,6 +283,13 @@ export function mergeTarget(defaults: TargetConfig, target: TargetConfig): Targe
   const base = defined(normalizeAccess(expandConnectionString(defaults)))
   const over = defined(normalizeAccess(expandConnectionString(target)))
   const merged: TargetConfig = { ...base, ...over }
+  // A target's own hop stands alone, over any hop or address from defaults
+  if (over.proxyCommand) {
+    delete merged.ssh
+    delete merged.host
+    delete merged.port
+  }
+  if (over.ssh) delete merged.proxyCommand
   if (typeof base.ssh === 'object' && typeof over.ssh === 'object') {
     merged.ssh = { ...base.ssh, ...defined(over.ssh) }
   }
@@ -304,7 +328,7 @@ function defined<T extends object>(value: T): Partial<T> {
 const CONNECTION_FLAG_KEYS = [
   'host', 'port', 'user', 'password', 'password-file', 'password-cmd',
   'database', 'connection-string', 'ssl', 'ssl-ca', 'ssl-cert', 'ssl-key',
-  'ssh-host', 'ssh-port', 'ssh-user', 'ssh-key', 'ssh-password',
+  'ssh-host', 'ssh-port', 'ssh-user', 'ssh-key', 'ssh-password', 'proxy-command',
 ] as const
 
 export function usedConnectionFlags(flags: ConnectionFlags): string[] {
@@ -329,9 +353,13 @@ export function configFromFlags(flags: ConnectionFlags): TuskConfig {
   if (flags['connection-string']) base = { ...base, ...defined(parseConnectionString(flags['connection-string'])) }
 
   const flagPasswordSource = Boolean(flags.password || flags['password-file'] || flags['password-cmd'])
+  const proxied = (['host', 'port'] as const).filter(field => flags['proxy-command'] && flags[field] !== undefined)
+  if (proxied.length > 0) {
+    throw new Error(`--${proxied.join(' and --')} cannot be combined with --proxy-command, which reaches the database itself`)
+  }
   const target: TargetConfig = defined({
-    host: flags.host ?? base.host,
-    port: flags.port ?? base.port,
+    host: flags['proxy-command'] ? undefined : (flags.host ?? base.host),
+    port: flags['proxy-command'] ? undefined : (flags.port ?? base.port),
     user: flags.user ?? base.user,
     password: flagPasswordSource ? flags.password : base.password,
     passwordFile: flags['password-file'],
@@ -339,6 +367,7 @@ export function configFromFlags(flags: ConnectionFlags): TuskConfig {
     database: flags.database ?? base.database,
     ssl: sslFromFlags(flags),
     ssh: sshFromFlags(flags),
+    proxyCommand: flags['proxy-command'],
   })
   return { targets: { db: target } }
 }
@@ -352,6 +381,9 @@ function sslFromFlags(flags: ConnectionFlags): TargetConfig['ssl'] {
 
 function sshFromFlags(flags: ConnectionFlags): TargetConfig['ssh'] {
   if (!flags['ssh-host']) return undefined
+  if (flags['proxy-command']) {
+    throw new Error('--proxy-command and --ssh-host both describe the hop to the database; keep one')
+  }
   if (!flags['ssh-user']) throw new Error('--ssh-user is required when using --ssh-host')
   if (!flags['ssh-key'] && !flags['ssh-password']) {
     throw new Error('--ssh-key or --ssh-password is required when using --ssh-host')

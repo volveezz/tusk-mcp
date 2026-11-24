@@ -23,6 +23,7 @@ export interface ConnectionFlags {
   'ssh-user'?: string
   'ssh-key'?: string
   'ssh-password'?: string
+  'proxy-command'?: string
   'structure-only'?: boolean
   'allow-writes'?: boolean
 }
@@ -57,6 +58,8 @@ export interface Tunnel {
   localHost: string
   localPort: number
   close: () => Promise<void>
+  /** Resolves when the hop is dead for good, so the registry drops the target and the next call reconnects. */
+  broken?: Promise<Error>
 }
 
 export interface SchemaInfo {
@@ -137,5 +140,5 @@ export interface PostgresClient {
   describeTable(table: string, schema: string): Promise<TableDescription>
   executeQuery(query: string, limit: number): Promise<QueryResult>
   executeWrite(statement: string, limit: number): Promise<WriteResult>
-  close(): Promise<void>
+  close(timeout?: number): Promise<void>
 }

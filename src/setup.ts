@@ -5,7 +5,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import net from 'net'
 import { createPostgresClient } from './client.js'
-import { createTunnel } from './tunnel.js'
+import { createProxyCommandTunnel, createTunnel } from './tunnel.js'
 import { parseConnectionString } from './utils.js'
 import type { PostgresConnectionOptions, Tunnel } from './types.js'
 
@@ -54,7 +54,9 @@ async function testConnection(params: Record<string, unknown>) {
       connOptions.ssl = sslConfig
     }
 
-    if (params.sshHost) {
+    if (params.proxyCommand) {
+      tunnel = await createProxyCommandTunnel(params.proxyCommand as string)
+    } else if (params.sshHost) {
       tunnel = await createTunnel({
         sshHost: params.sshHost as string,
         sshPort: parseInt(String(params.sshPort)) || 22,
@@ -64,6 +66,8 @@ async function testConnection(params: Record<string, unknown>) {
         targetHost: connOptions.host,
         targetPort: connOptions.port,
       })
+    }
+    if (tunnel) {
       connOptions.host = tunnel.localHost
       connOptions.port = tunnel.localPort
     }
@@ -626,7 +630,7 @@ const HTML = /*html*/ `<!DOCTYPE html>
 
   <section>
     <div class="section-header" data-toggle="ssh-section">
-      <span class="arrow">&#9654;</span> SSH Tunnel
+      <span class="arrow">&#9654;</span> SSH Tunnel / Proxy Command
     </div>
     <div class="section-content card" id="ssh-section">
       <div class="row">
@@ -653,6 +657,11 @@ const HTML = /*html*/ `<!DOCTYPE html>
       <div class="field">
         <label>SSH Password</label>
         <input type="password" id="sshPassword" placeholder="optional (alternative to key)">
+      </div>
+      <div class="field">
+        <label>Proxy Command</label>
+        <input type="text" id="proxyCommand" placeholder="ssh bastion nc db.internal 5432">
+        <p class="field-note">Takes over host, port, and the SSH fields: the command's stdio carries the connection, and it runs with your shell, ssh config, and agent</p>
       </div>
     </div>
   </section>
@@ -785,12 +794,13 @@ $$('.browse-btn').forEach(btn => {
 
 function getParams() {
   const isString = $('.mode-tab.active').dataset.mode === 'string'
+  const proxyCommand = $('#proxyCommand').value
   const p = {}
   if (isString) {
     p.connectionString = $('#connectionString').value
   } else {
-    if ($('#host').value) p.host = $('#host').value
-    if ($('#port').value) p.port = $('#port').value
+    if ($('#host').value && !proxyCommand) p.host = $('#host').value
+    if ($('#port').value && !proxyCommand) p.port = $('#port').value
     if ($('#database').value) p.database = $('#database').value
     if ($('#user').value) p.user = $('#user').value
     if ($('#password').value) p.password = $('#password').value
@@ -799,11 +809,15 @@ function getParams() {
   if ($('#sslCert').value) p.sslCert = $('#sslCert').value
   if ($('#sslKey').value) p.sslKey = $('#sslKey').value
   if (p.sslCa || p.sslCert || p.sslKey) p.ssl = true
-  if ($('#sshHost').value) p.sshHost = $('#sshHost').value
-  if ($('#sshPort').value && $('#sshPort').value !== '22') p.sshPort = $('#sshPort').value
-  if ($('#sshUser').value) p.sshUser = $('#sshUser').value
-  if ($('#sshKey').value) p.sshKey = $('#sshKey').value
-  if ($('#sshPassword').value) p.sshPassword = $('#sshPassword').value
+  if (proxyCommand) {
+    p.proxyCommand = proxyCommand
+  } else {
+    if ($('#sshHost').value) p.sshHost = $('#sshHost').value
+    if ($('#sshPort').value && $('#sshPort').value !== '22') p.sshPort = $('#sshPort').value
+    if ($('#sshUser').value) p.sshUser = $('#sshUser').value
+    if ($('#sshKey').value) p.sshKey = $('#sshKey').value
+    if ($('#sshPassword').value) p.sshPassword = $('#sshPassword').value
+  }
   if ($('#access').value !== 'read') p.access = $('#access').value
   return p
 }
@@ -825,10 +839,13 @@ function buildArgs(p) {
   if (p.sshPort) args.push('--ssh-port', p.sshPort)
   if (p.sshUser) args.push('--ssh-user', p.sshUser)
   if (p.sshKey) args.push('--ssh-key', p.sshKey)
+  if (p.proxyCommand) args.push('--proxy-command', p.proxyCommand)
   if (p.access === 'structure') args.push('--structure-only')
   if (p.access === 'write') args.push('--allow-writes')
   return args
 }
+
+const PROXIED_FIELDS = ['host', 'port', 'sshHost', 'sshPort', 'sshUser', 'sshKey', 'sshPassword']
 
 const ACCESS_NOTES = {
   read: 'Queries run with the session pinned to read-only transactions.',
@@ -837,6 +854,9 @@ const ACCESS_NOTES = {
 }
 
 function updateConfig() {
+  const proxied = Boolean($('#proxyCommand').value)
+  PROXIED_FIELDS.forEach(id => { $('#' + id).disabled = proxied })
+
   const p = getParams()
   const args = buildArgs(p)
 
