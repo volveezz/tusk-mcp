@@ -18,7 +18,11 @@ export async function createTunnel(options: TunnelOptions): Promise<Tunnel> {
     : undefined
 
   await new Promise<void>((resolve, reject) => {
-    ssh.on('ready', resolve)
+    ssh.on('ready', () => {
+      // ssh2 leaves Nagle on; under node every pgwire round trip then waits on delayed ACK, ~180 ms p50 observed 2026-11
+      ssh.setNoDelay(true)
+      resolve()
+    })
     ssh.on('error', reject)
     ssh.connect({
       host: options.sshHost,
