@@ -924,7 +924,7 @@ $('#testBtn').addEventListener('click', async () => {
     if (data.success) {
       box.className = 'result-box success'
       $('#resultTitle').textContent = 'Connection successful'
-      $('#resultBody').textContent = data.info.db + ' \\u2014 ' + (data.info.version || '').split(',')[0]
+      $('#resultBody').textContent = data.info.db + ' · ' + (data.info.version || '').split(',')[0]
         + '\\nUser: ' + data.info.user
     } else {
       box.className = 'result-box error'

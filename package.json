@@ -1,7 +1,8 @@
 {
   "name": "tusk-mcp",
-  "version": "0.3.0",
-  "description": "PostgreSQL MCP server for AI agents. Schema introspection, SELECT-only query execution, and opt-in write access per target.",
+  "version": "0.4.0",
+  "mcpName": "io.github.volveezz/tusk-mcp",
+  "description": "Postgres MCP server: local, stage and prod as named targets, reads in READ ONLY transactions, writes opt-in per target, SSH and proxy command tunnels",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -14,15 +15,17 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "postgresql",
     "postgres",
     "ai",
     "agent",
-    "model-context-protocol",
     "database",
     "schema",
     "read-only",
-    "sql"
+    "sql",
+    "ssh-tunnel"
   ],
   "bin": {
     "tusk-mcp": "dist/cli.mjs"
@@ -38,7 +41,7 @@
     "check": "tsc --noEmit && bun test",
     "test": "bun test",
     "build:npm": "bun build src/index.ts --outfile dist/cli.mjs --target=node --minify --external cpu-features",
-    "prepublishOnly": "bun run build:npm",
+    "prepublishOnly": "bun run check && bun run build:npm",
     "build": "bun build --compile --bytecode --minify --format=esm --splitting src/index.ts --outfile dist/tusk-mcp"
   },
   "devDependencies": {

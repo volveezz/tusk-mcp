@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { version } from '../package.json'
 import type { AccessLevel } from './config.js'
 import type { TargetRegistry } from './targets.js'
 import { registerSchemaTools } from './tools/schema.js'
@@ -14,7 +15,7 @@ export class TuskMcpServer {
   constructor(registry: TargetRegistry) {
     this.registry = registry
     this.mcpServer = new McpServer(
-      { name: 'tusk-mcp', version: '0.3.0' },
+      { name: 'tusk-mcp', version },
       { instructions: buildInstructions(registry) },
     )
   }

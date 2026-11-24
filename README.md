@@ -1,11 +1,10 @@
 # tusk-mcp
 
-PostgreSQL MCP server for AI agents. Exposes schema introspection and SELECT-only query execution over the Model Context Protocol, with write access opt-in per target.
+Postgres MCP server that gives an agent your local, stage and prod databases as named targets. Every query runs inside a READ ONLY transaction, so Postgres refuses a write the SQL check misses. Writes stay off until a target sets `access: "write"` in the config file. Databases behind a bastion connect through the built-in SSH tunnel or any proxy command: ssh, docker exec, kubectl exec. `compare-schemas` diffs a schema between any two targets.
 
 ## Install
 
 ```bash
-# npx (no install needed)
 npx tusk-mcp --host db.example.com --database mydb
 
 # or clone + run
@@ -15,7 +14,7 @@ bun run src/index.ts --host localhost --database mydb
 
 ## Setup UI
 
-Interactive browser-based setup that generates config for Claude Desktop, Claude Code, Cursor, Windsurf, and OpenAI Codex.
+Opens a browser form that tests the connection and writes the config for Claude Desktop, Claude Code, Cursor, Windsurf or OpenAI Codex.
 
 ```bash
 npx tusk-mcp setup
@@ -30,7 +29,7 @@ bun run build --target=bun-windows-x64   # cross-compile: bun-linux-arm64, bun-d
 
 ## Connection
 
-### Individual flags (recommended)
+### Flags
 ```bash
 tusk-mcp --host db.example.com --port 5432 --user admin --password 'p@ss' --database mydb
 ```

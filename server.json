@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.volveezz/tusk-mcp",
+  "title": "tusk",
+  "description": "Postgres for agents: named local/stage/prod targets, READ ONLY reads, opt-in writes, SSH tunnels",
+  "repository": {
+    "url": "https://github.com/volveezz/tusk-mcp",
+    "source": "github"
+  },
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "tusk-mcp",
+      "version": "0.4.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
